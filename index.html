@@ -3,9 +3,9 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Prosody Player — Waveform</title>
+  <title>Prosody Player — Waveform + Pulse</title>
   <style>
-    :root{--bg:#0b0c0f;--ink:#e7e9ee;--muted:#9aa3b2;--panel:#14161a}
+    :root{--bg:#0b0c0f;--ink:#e7e9ee;--muted:#9aa3b2;--panel:#14161a;--accent:#6ae2ff}
     html,body{height:100%}
     body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial}
     .wrap{max-width:1100px;margin:0 auto;padding:24px}
@@ -15,6 +15,16 @@
     .pill{margin-left:auto;display:inline-block;padding:2px 8px;border-radius:999px;background:#0f1218;border:1px solid rgba(255,255,255,.12);font-size:12px;color:var(--muted)}
     #overview{height:72px}
     #detail{height:210px;border-top:1px solid rgba(255,255,255,.06)}
+
+    /* Center pulse circle */
+    .pulse-wrap{position:absolute;inset:0;pointer-events:none;display:grid;place-items:center}
+    .pulse{width:110px;height:110px;border-radius:999px;
+      background:radial-gradient( circle at 50% 45%, rgba(255,255,255,.10), rgba(255,255,255,.02) 60%, rgba(255,255,255,0) 70% );
+      outline:2px solid rgba(255,255,255,.12);
+      box-shadow:0 0 0 0 rgba(106,226,255,.25), 0 0 32px rgba(106,226,255,.08) inset;
+      transform:scale(1); transition:transform 80ms linear, box-shadow 80ms linear, outline-color 80ms linear;
+    }
+    .pulse.big{outline-color:rgba(106,226,255,.6)}
   </style>
 </head>
 <body>
@@ -29,6 +39,7 @@
       </div>
       <div id="overview"></div>
       <div id="detail"></div>
+      <div class="pulse-wrap"><div id="pulse" class="pulse"></div></div>
     </div>
   </div>
 
@@ -74,6 +85,90 @@
 
     wsDetail.on('seek',syncOverview);
     wsOverview.on('seek',rel=> wsDetail.seekTo(rel));
+
+    // ----------------- Pulse (amplitude-driven) -----------------
+    // We precompute a lightweight RMS envelope once, then map
+    // current play time -> envelope value -> circle scale.
+
+    const pulseEl=document.getElementById('pulse');
+
+    // Tunables (override via query params):
+    const frameMs = +qp('frame', 80);  // window length (ms)
+    const hopMs   = +qp('hop',   20);  // hop (ms)
+    const pctl    = +qp('pctl',  78);  // percentile threshold for "big" (~stressed)
+    const capPctl = +qp('cap',   95);  // upper cap percentile → full scale
+    const minScale= +qp('smin',  0.9); // base scale when quiet
+    const maxScale= +qp('smax',  3.2); // max scale at/above cap
+    const gamma   = +qp('gamma', 1.6); // nonlinearity; >1 emphasizes peaks
+    const atkMs   = +qp('atk',   40);  // visual attack smoothing (ms)
+    const relMs   = +qp('rel',  120);  // visual release smoothing (ms)
+
+    let env=null; // [{t, r}] RMS envelope
+    let thr=0.2, cap=0.8; // dynamic mapping points
+
+    wsDetail.on('ready', precomputeEnvelope);
+
+    async function precomputeEnvelope(){
+      try{
+        const ac=new (window.AudioContext||window.webkitAudioContext)();
+        if(ac.state==='suspended'){ try{ await ac.resume(); }catch{} }
+        const ab=await fetch(src,{cache:'no-store'}).then(r=>r.arrayBuffer());
+        const buf=await ac.decodeAudioData(ab);
+        const sr=buf.sampleRate, ch=buf.getChannelData(0);
+        const frame=Math.max(64, Math.round(frameMs*sr/1000));
+        const hop  =Math.max(16, Math.round(hopMs  *sr/1000));
+        const out=[]; let maxR=1e-9;
+        for(let i=0;i+frame<=ch.length;i+=hop){
+          let e=0; for(let j=0;j<frame;j++){ const v=ch[i+j]; e+=v*v; }
+          const r=Math.sqrt(e/frame); if(r>maxR) maxR=r; out.push({t:i/sr, r});
+        }
+        // normalize 0..1
+        for(const p of out){ p.r/=maxR; }
+        env=out;
+        // compute mapping thresholds from percentiles
+        const vals=out.map(p=>p.r).sort((a,b)=>a-b);
+        const q=(x)=> vals[Math.min(vals.length-1, Math.max(0, Math.round((x/100)*vals.length)))] || 0;
+        thr=q(pctl); cap=Math.max(thr+1e-6,q(capPctl));
+        ac.close();
+        startPulseLoop();
+      }catch(e){ console.warn('Envelope failed:', e); }
+    }
+
+    function interpEnv(t){ // nearest (fast)
+      if(!env||!env.length) return 0;
+      // binary search
+      let lo=0, hi=env.length-1;
+      while(lo<hi){ const mid=(lo+hi)>>1; if(env[mid].t < t) lo=mid+1; else hi=mid; }
+      const idx=Math.max(0, Math.min(env.length-1, lo));
+      return env[idx].r;
+    }
+
+    let raf=0, smoothed=0, lastT=0;
+    function startPulseLoop(){
+      cancelAnimationFrame(raf);
+      const atk = Math.exp(-1 / ( (atkMs/1000) * 60 )); // frame-rate independent-ish
+      const rel = Math.exp(-1 / ( (relMs/1000) * 60 ));
+      const loop=()=>{
+        const t=wsDetail.getCurrentTime()||0;
+        if(t!==lastT){
+          const raw = interpEnv(t);
+          // map to 0..1 relative to thr/cap
+          let x = (raw - thr) / (cap - thr); x = Math.max(0, Math.min(1, x));
+          x = Math.pow(x, gamma);
+          // attack/release smoothing
+          const coeff = (x>smoothed)? (1- Math.pow(atk,2)) : (1- Math.pow(rel,2));
+          smoothed = smoothed + coeff * (x - smoothed);
+          // scale & style
+          const s = minScale + (maxScale - minScale) * smoothed;
+          pulseEl.style.transform = `scale(${s.toFixed(3)})`;
+          pulseEl.classList.toggle('big', x>=0.999);
+          pulseEl.style.boxShadow = `0 0 0 ${Math.round(8*smoothed)}px rgba(106,226,255,${0.15+0.25*smoothed}), inset 0 0 ${Math.round(24+48*smoothed)}px rgba(106,226,255,${0.10+0.15*smoothed})`;
+        }
+        lastT=t;
+        raf=requestAnimationFrame(loop);
+      };
+      raf=requestAnimationFrame(loop);
+    }
   })();
   </script>
 </body>
