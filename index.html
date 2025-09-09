@@ -1,17 +1,16 @@
 <!doctype html>
-
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>Prosody Player</title>
   <style>
-    :root{--bg:#0b0c0f;--ink:#e7e9ee;--muted:#9aa3b2;--panel:#14161a;--accent:#6ae2ff;--cursor:#ff6b6b}
+    :root{--bg:#0b0c0f;--ink:#e7e9ee;--muted:#9aa3b2;--panel:#14161a;--accent:#4be4ff;--cursor:#ff6b6b}
     html,body{height:100%}
     body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial}
     .wrap{max-width:1100px;margin:0 auto;padding:24px}
-    .card{position:relative;background:var(--panel);border:1px solid rgba(255,255,255,.08);border-radius:16px;box-shadow:0 12px 28px rgba(0,0,0,.25);overflow:hidden}
-    .controls{display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid rgba(255,255,255,.06)}
+    .card{background:var(--panel);border:1px solid rgba(255,255,255,.08);border-radius:16px;box-shadow:0 12px 28px rgba(0,0,0,.25);overflow:hidden}
+    .controls{display:flex;gap:10px;align-items:center;padding:12px 14px;border-bottom:1px solid rgba(255,255,255,.06)}
     .btn{background:#0f1218;border:1px solid rgba(255,255,255,.12);color:var(--ink);border-radius:999px;padding:8px 14px;cursor:pointer}
     .pill{margin-left:auto;display:inline-block;padding:2px 8px;border-radius:999px;background:#0f1218;border:1px solid rgba(255,255,255,.12);font-size:12px;color:var(--muted)}
     #overview{height:72px}
@@ -33,191 +32,138 @@
       <div id="detail"></div>
       <canvas id="pitch"></canvas>
     </div>
-  </div>  <script src="./wavesurfer.min.js"></script>  <script>
-  (function(){
-    const qp = (k, d) => (new URLSearchParams(location.search).get(k) || d);
-    const src = qp('voice','voice.mp3');
+  </div>
 
-    // -------- Overview (full file) --------
-    const wsOverview = WaveSurfer.create({
-      container: '#overview',
-      height: 72,
-      waveColor: '#24313b',
-      progressColor: '#435564',
-      cursorColor: 'transparent',
-      barWidth: 1,
-      barGap: 0,
-      normalize: true,
-      interact: true,
-      dragToSeek: true,
-      responsive: true,
+  <!-- local build you added -->
+  <script src="./wavesurfer.min.js"></script>
+  <script>
+  (function(){
+    const qp=(k,d)=>new URLSearchParams(location.search).get(k)||d;
+    const src=qp('voice','voice.mp3');
+
+    // ---- WaveSurfer: overview + detail (auto-center) ----
+    const wsOverview=WaveSurfer.create({
+      container:'#overview',height:72,waveColor:'#24313b',progressColor:'#435564',
+      cursorColor:'transparent',barWidth:1,barGap:0,normalize:true,interact:true,dragToSeek:true,responsive:true
     });
 
-    // -------- Detail (zoomed, auto-scrolling) --------
-    let pxPerSec = 140; // initial zoom
-    const wsDetail = WaveSurfer.create({
-      container: '#detail',
-      height: 180,
-      waveColor: '#2b97ad',
-      progressColor: '#6ae2ff',
-      cursorColor: '#6ae2ff',
-      barWidth: 2,
-      barGap: 1,
-      barRadius: 1,
-      minPxPerSec: pxPerSec,
-      autoCenter: true,
-      hideScrollbar: false,
-      dragToSeek: true,
-      normalize: true,
-      responsive: true,
+    let pxPerSec=140;
+    const wsDetail=WaveSurfer.create({
+      container:'#detail',height:180,waveColor:'#2b97ad',progressColor:'#6ae2ff',cursorColor:'#6ae2ff',
+      barWidth:2,barGap:1,barRadius:1,minPxPerSec:pxPerSec,autoCenter:true,hideScrollbar:false,dragToSeek:true,
+      normalize:true,responsive:true
     });
 
     wsOverview.load(src);
     wsDetail.load(src);
 
-    // Controls
-    const timePill = document.getElementById('time');
-    document.getElementById('zoomIn').onclick  = ()=>{ pxPerSec=Math.min(600, pxPerSec*1.25); wsDetail.setOptions({minPxPerSec:pxPerSec}); drawPitch(); };
-    document.getElementById('zoomOut').onclick = ()=>{ pxPerSec=Math.max(40,  pxPerSec/1.25); wsDetail.setOptions({minPxPerSec:pxPerSec}); drawPitch(); };
-    document.getElementById('play').onclick  = ()=> wsDetail.play();
-    document.getElementById('pause').onclick = ()=> wsDetail.pause();
+    // controls
+    const timePill=document.getElementById('time');
+    document.getElementById('zoomIn').onclick = ()=>{ pxPerSec=Math.min(600,pxPerSec*1.25); wsDetail.setOptions({minPxPerSec:pxPerSec}); drawPitch(); };
+    document.getElementById('zoomOut').onclick= ()=>{ pxPerSec=Math.max(40, pxPerSec/1.25); wsDetail.setOptions({minPxPerSec:pxPerSec}); drawPitch(); };
+    document.getElementById('play').onclick   = ()=> wsDetail.play();
+    document.getElementById('pause').onclick  = ()=> wsDetail.pause();
 
-    // Keep overview position in sync with the playing detail view
     function syncOverview(){
-      const t = wsDetail.getCurrentTime() || 0;
-      const d = wsDetail.getDuration() || 1;
-      if (wsOverview.setTime) wsOverview.setTime(t); else wsOverview.seekTo(t/d);
+      const t=wsDetail.getCurrentTime()||0, d=wsDetail.getDuration()||1;
+      if(wsOverview.setTime) wsOverview.setTime(t); else wsOverview.seekTo(t/d);
     }
+    wsDetail.on('timeupdate',()=>{ syncOverview(); const t=wsDetail.getCurrentTime()||0, d=wsDetail.getDuration()||0; timePill.textContent=`${t.toFixed(2)} / ${d.toFixed(2)} s`; drawPitch(); });
+    wsDetail.on('seek',()=>{ syncOverview(); drawPitch(); });
+    wsOverview.on('seek',rel=> wsDetail.seekTo(rel));
+    wsDetail.on('redraw',()=>{ resizePitch(); drawPitch(); });
+    window.addEventListener('resize',()=>{ resizePitch(); drawPitch(); });
 
-    wsDetail.on('timeupdate', ()=>{ syncOverview(); const t=wsDetail.getCurrentTime()||0, d=wsDetail.getDuration()||0; timePill.textContent = `${t.toFixed(2)} / ${d.toFixed(2)} s`; drawPitch(); });
-    wsDetail.on('seek',      ()=>{ syncOverview(); drawPitch(); });
-    wsOverview.on('seek',    (rel)=> wsDetail.seekTo(rel));
-    wsDetail.on('redraw',    ()=>{ resizePitch(); drawPitch(); });
-    window.addEventListener('resize', ()=>{ resizePitch(); drawPitch(); });
-
-    // ---------- Pitch strip (separate canvas) ----------
-    const pitchCanvas = document.getElementById('pitch');
-    const pctx = pitchCanvas.getContext('2d');
-    function clamp(v,min,max){return Math.max(min, Math.min(max, v));}
-
+    // ---- Pitch strip (separate, resilient) ----
+    const pitchCanvas=document.getElementById('pitch'); const pctx=pitchCanvas.getContext('2d');
     function resizePitch(){
-      const dpr = Math.max(1, devicePixelRatio||1);
-      const rect = wsDetail.getWrapper().getBoundingClientRect();
-      pitchCanvas.width  = Math.max(1, Math.floor(rect.width*dpr));
-      const cssH = 140; // fixed CSS height
-      pitchCanvas.height = Math.floor(cssH*dpr);
-      pitchCanvas.style.width = rect.width+"px"; pitchCanvas.style.height = cssH+"px";
+      const dpr=Math.max(1,devicePixelRatio||1);
+      const rect=wsDetail.getWrapper().getBoundingClientRect();
+      pitchCanvas.width=Math.max(1,Math.floor(rect.width*dpr));
+      const cssH=140; pitchCanvas.height=Math.floor(cssH*dpr);
+      pitchCanvas.style.width=rect.width+'px'; pitchCanvas.style.height=cssH+'px';
       pctx.setTransform(dpr,0,0,dpr,0,0);
     }
+    resizePitch();
 
-    let f0pts = null; // [{t,f0}], Hz
-    let pitchReady = false;
+    let f0pts=null, pitchReady=false;
 
     async function computePitch(){
-      if(pitchReady) return; // run once
-      (async()=>{
-        try{
-          const ac = new (window.AudioContext||window.webkitAudioContext)();
-          if(ac.state === 'suspended'){ try{ await ac.resume(); }catch(_){} }
-          const ab = await fetch(src, {cache:'no-store'}).then(r=>r.arrayBuffer());
-          const buf = await ac.decodeAudioData(ab);
-          // ---- downsample for speed (mobile-safe) ----
-          const target = 12000; // ~11–12 kHz
-          const sr0 = buf.sampleRate;
-          const factor = Math.max(1, Math.floor(sr0/target));
-          const sr = sr0 / factor;
-          const ch = buf.getChannelData(0);
-          const N = Math.floor(ch.length / factor);
-          const s = new Float32Array(N);
-          for(let j=0,i=0; j<N; j++, i+=factor){ s[j] = ch[i]; }
+      if(pitchReady) return;
+      try{
+        const ac=new (window.AudioContext||window.webkitAudioContext)();
+        if(ac.state==='suspended'){ try{ await ac.resume(); }catch{} }
+        const ab=await fetch(src,{cache:'no-store'}).then(r=>r.arrayBuffer());
+        const buf=await ac.decodeAudioData(ab);
 
-          const frame=1024, hop=256; // 85 ms window at 12k, 21 ms hop
-          const minF=60, maxF=400; const minLag=Math.floor(sr/maxF), maxLag=Math.floor(sr/minF);
-          const win = new Float32Array(frame); for(let i=0;i<frame;i++){ win[i]=0.5*(1-Math.cos(2*Math.PI*i/(frame-1))); }
-          const out=[];
+        // ---- 8 kHz downsample (fast, good enough for 60–400 Hz) ----
+        const target=8000, sr0=buf.sampleRate, factor=Math.max(1,Math.floor(sr0/target));
+        const sr=sr0/factor, ch=buf.getChannelData(0), N=Math.floor(ch.length/factor);
+        const s=new Float32Array(N); for(let j=0,i=0;j<N;j++,i+=factor) s[j]=ch[i];
 
-          for(let idx=0,i=0; i+frame < s.length; i+=hop, idx++){
-            let best=0, lagBest=0;
-            for(let lag=minLag; lag<=maxLag; lag++){
-              let corr=0, n1=0, n2=0;
-              for(let j=0;j<frame-lag;j++){
-                const a = s[i+j]*win[j];
-                const b = s[i+j+lag]*win[j+lag];
-                corr += a*b; n1 += a*a; n2 += b*b;
-              }
-              const c = corr / (Math.sqrt(n1*n2) + 1e-12);
-              if(c>best){best=c; lagBest=lag;}
+        const frame=640, hop=80;  // 80 ms / 10 ms at 8 kHz
+        const minF=60, maxF=400, minLag=Math.floor(sr/maxF), maxLag=Math.floor(sr/minF);
+        const win=new Float32Array(frame); for(let i=0;i<frame;i++) win[i]=0.5*(1-Math.cos(2*Math.PI*i/(frame-1)));
+        const out=[];
+        for(let idx=0,i=0;i+frame<s.length;i+=hop,idx++){
+          let best=0, lagBest=0;
+          for(let lag=minLag; lag<=maxLag; lag++){
+            let corr=0,n1=0,n2=0;
+            for(let j=0;j<frame-lag;j++){
+              const a=s[i+j]*win[j], b=s[i+j+lag]*win[j+lag];
+              corr+=a*b; n1+=a*a; n2+=b*b;
             }
-            const cth=0.65; const f0 = (best>cth)? (sr/lagBest) : 0;
-            out.push({t:i/sr, f0});
-            if((idx % 40)===0){ f0pts = out.slice(); drawPitch(); await new Promise(requestAnimationFrame); }
+            const c=corr/(Math.sqrt(n1*n2)+1e-12);
+            if(c>best){ best=c; lagBest=lag; }
           }
-          for(let k=1;k<out.length-1;k++){ out[k].f0 = out[k-1].f0*0.25 + out[k].f0*0.5 + out[k+1].f0*0.25; }
-          f0pts = out; pitchReady = true; resizePitch(); drawPitch(); ac.close();
-        }catch(e){ console.warn('Pitch analysis failed', e); }
-      })();
+          const cth=0.70; const f0=(best>cth)? (sr/lagBest) : 0;
+          out.push({t:i/sr, f0});
+          if((idx%50)===0){ f0pts=out.slice(); drawPitch(); await new Promise(requestAnimationFrame); }
+        }
+        for(let k=1;k<out.length-1;k++) out[k].f0=out[k-1].f0*0.25+out[k].f0*0.5+out[k+1].f0*0.25;
+        f0pts=out; pitchReady=true; resizePitch(); drawPitch(); ac.close();
+      }catch(e){
+        console.warn('Pitch analysis failed (continuing without F0):', e);
+        // Keep waveform working even if pitch fails
+      }
     }
 
-    // Trigger pitch analysis on first play (mobile safe), and also after load on desktop
-    let armed=false; function armPitch(){ if(!armed){armed=true; computePitch();} }
-    document.getElementById('play').addEventListener('click', armPitch);
-    wsDetail.on('play', armPitch);
-    // desktop fallback
-    setTimeout(armPitch, 1200);
+    // start F0 on first play (mobile safe), also arm after load for desktop
+    let armed=false; function arm(){ if(!armed){ armed=true; computePitch(); } }
+    document.getElementById('play').addEventListener('click',arm);
+    wsDetail.on('play',arm);
+    setTimeout(arm,1200);
 
     function drawPitch(){
-      const W = pitchCanvas.width, H = pitchCanvas.height; if(!W||!H) return; pctx.clearRect(0,0,W,H);
+      const W=pitchCanvas.width, H=pitchCanvas.height; if(!W||!H) return;
+      pctx.clearRect(0,0,W,H);
       // grid
-      pctx.strokeStyle = 'rgba(255,255,255,.06)';
+      pctx.strokeStyle='rgba(255,255,255,.06)';
       for(let i=1;i<=3;i++){ const y=(H*i/4); pctx.beginPath(); pctx.moveTo(0,y+0.5); pctx.lineTo(W,y+0.5); pctx.stroke(); }
 
-      if(!f0pts || !f0pts.length) return;
-      const fmin=60, fmax=400; const dur = wsDetail.getDuration() || (f0pts.at(-1)?.t || 1);
-      const widthPx = pitchCanvas.clientWidth || W;
-      const secondsVisible = widthPx / pxPerSec;
-      const cur = wsDetail.getCurrentTime() || 0;
-      const maxStart = Math.max(0, dur - secondsVisible);
-      const start = Math.max(0, Math.min(cur - secondsVisible/2, maxStart));
-      const end = start + secondsVisible;
+      if(f0pts && f0pts.length){
+        const fmin=60, fmax=400, dur=wsDetail.getDuration()||(f0pts.at(-1)?.t||1);
+        const widthPx=pitchCanvas.clientWidth||W, secondsVisible=widthPx/pxPerSec;
+        const cur=wsDetail.getCurrentTime()||0, maxStart=Math.max(0,dur-secondsVisible);
+        const start=Math.max(0,Math.min(cur-secondsVisible/2,maxStart)), end=start+secondsVisible;
 
-      pctx.strokeStyle = '#4be4ff'; pctx.lineWidth = 3; pctx.beginPath(); let on=false;
-      for(const p of f0pts){
-        if(p.t < start || p.t > end || p.f0<=0) { on=false; continue; }
-        const x = ( (p.t - start) * pxPerSec );
-        const ratio = Math.max(0, Math.min(1, (p.f0 - fmin)/(fmax - fmin)));
-        const y = H - ratio*H;
-        if(!on){ pctx.moveTo(x,y); on=true; } else { pctx.lineTo(x,y); }
+        pctx.strokeStyle=varGet('--accent','#4be4ff'); pctx.lineWidth=3; pctx.beginPath(); let on=false;
+        for(const p of f0pts){
+          if(p.t<start||p.t>end||p.f0<=0){ on=false; continue; }
+          const x=(p.t-start)*pxPerSec;
+          const ratio=Math.max(0,Math.min(1,(p.f0-fmin)/(fmax-fmin)));
+          const y=H - ratio*H;
+          if(!on){ pctx.moveTo(x,y); on=true; } else { pctx.lineTo(x,y); }
+        }
+        pctx.stroke();
+        // playhead at center
+        const x=(secondsVisible/2)*pxPerSec;
+        pctx.strokeStyle=varGet('--cursor','#ff6b6b'); pctx.lineWidth=2; pctx.beginPath(); pctx.moveTo(x+0.5,0); pctx.lineTo(x+0.5,H); pctx.stroke();
       }
-      pctx.stroke();
-
-      // playhead at center
-      const x = (secondsVisible/2) * pxPerSec;
-      pctx.strokeStyle = 'var(--cursor)'; pctx.lineWidth=2; pctx.beginPath(); pctx.moveTo(x+0.5,0); pctx.lineTo(x+0.5,H); pctx.stroke();
     }
 
-      if(!f0pts || !f0pts.length) return;
-      const fmin=60, fmax=400; const dur = wsDetail.getDuration() || (f0pts.at(-1)?.t || 1);
-      // Compute visible window start based on zoom and current time (mirrors autoCenter)
-      const widthPx = pitchCanvas.clientWidth || W;
-      const secondsVisible = widthPx / pxPerSec;
-      const cur = wsDetail.getCurrentTime() || 0;
-      let start = clamp(cur - secondsVisible/2, 0, Math.max(0, dur - secondsVisible));
-      const end = start + secondsVisible;
-
-      pctx.strokeStyle = '#6ae2ff'; pctx.lineWidth = 2; pctx.beginPath(); let on=false;
-      for(const p of f0pts){
-        if(p.t < start || p.t > end || p.f0<=0) { on=false; continue; }
-        const x = ( (p.t - start) * pxPerSec );
-        const y = H - ((p.f0 - fmin)/(fmax - fmin))*H;
-        if(!on){ pctx.moveTo(x,y); on=true; } else { pctx.lineTo(x,y); }
-      }
-      pctx.stroke();
-
-      // playhead (center of viewport)
-      const x = (secondsVisible/2) * pxPerSec;
-      pctx.strokeStyle = 'var(--cursor)'; pctx.lineWidth=2; pctx.beginPath(); pctx.moveTo(x+0.5,0); pctx.lineTo(x+0.5,H); pctx.stroke();
-    }
-
+    function varGet(name,fallback){ return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback; }
   })();
-  </script></body>
+  </script>
+</body>
 </html>
