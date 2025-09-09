@@ -1,10 +1,9 @@
 <!doctype html>
-
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Waveform visualiser – dual audio (vanilla JS, no CDN)</title>
+  <title>Pitch + Waveforms – synced (WaveSurfer, local build)</title>
   <style>
     :root{--bg:#0b0c0f;--ink:#e7e9ee;--muted:#9aa3b2;--panel:#14161a;--accent:#6ae2ff;--accent2:#8b7cff;--danger:#ff6b6b}
     html,body{height:100%}
@@ -21,163 +20,193 @@
     input[type=range]{width:100%}
     button{background:#0f1218;border:1px solid rgba(255,255,255,.12);color:var(--ink);border-radius:999px;padding:8px 14px;cursor:pointer}
     .pill{display:inline-block;padding:2px 8px;border-radius:999px;background:#0f1218;border:1px solid rgba(255,255,255,.12);font-size:12px;color:var(--muted)}
-    canvas{display:block;width:100%;height:260px;border-radius:10px;background:linear-gradient(#0f1218,#0f1218) padding-box,linear-gradient(180deg,rgba(255,255,255,.08),rgba(255,255,255,.06)) border-box;border:1px solid rgba(255,255,255,.08)}
+    #pitch{display:block;width:100%;height:260px;border-radius:10px;background:linear-gradient(#0f1218,#0f1218) padding-box,linear-gradient(180deg,rgba(255,255,255,.08),rgba(255,255,255,.06)) border-box;border:1px solid rgba(255,255,255,.08)}
     .legend{display:flex;gap:14px;align-items:center;margin-top:8px}
     .dot{width:10px;height:10px;border-radius:50%}
+    .ws{height:140px;background:#0f1218;border-radius:10px}
   </style>
 </head>
 <body>
   <div class="wrap">
-    <div class="h1">Interactive waveform (synced to audio)</div>
-    <p class="muted" style="margin-top:0">No dependencies. Files must be at repo root: <code>voice.mp3</code> & <code>humming.mp3</code>. Play either audio; the <span style="color:var(--danger)">red bar</span> tracks time. You can override names with <code>?voice=…&hum=…</code>.</p><div class="grid" style="margin-top:16px">
-  <div class="card">
-    <div class="row" style="gap:16px;align-items:center">
-      <button id="btnReset">⏮️ Reset</button>
-      <button id="btnPlayVoice">▶️ Play voice</button>
-      <button id="btnPlayHum">▶️ Play humming</button>
-      <button id="btnPause">⏸️ Pause</button>
-      <div class="grow"></div>
-      <span class="pill" id="timepill">-- / -- s</span>
-    </div>
-    <div class="row" style="gap:16px;margin-top:10px">
-      <label>Cursor offset (ms)
-        <input id="offset" type="number" step="5" value="0" />
-      </label>
-      <div class="grow"></div>
-      <label class="muted">Seek</label>
-      <input id="seek" type="range" min="0" max="0" step="0.01" value="0" />
-    </div>
-    <div class="legend">
-      <span class="dot" style="background:var(--accent)"></span><span class="muted">Voice</span>
-      <span class="dot" style="background:var(--accent2)"></span><span class="muted">Humming</span>
-      <span class="dot" style="background:var(--danger)"></span><span class="muted">Playhead</span>
-    </div>
-  </div>
+    <div class="h1">Interactive PitchTier + dual waveforms (local assets)</div>
+    <p class="muted" style="margin-top:0">Files must be at repo root: <code>pitch.PitchTier</code>, <code>voice.mp3</code>, <code>humming.mp3</code>. Play either; the <span style="color:var(--danger)">red cursor</span> drives both the pitch graph and the other track. Override names with <code>?pitch=…&voice=…&hum=…</code>.</p>
 
-  <div class="card">
-    <div class="row" style="gap:16px;align-items:flex-start">
-      <div class="grow">
-        <div class="muted" style="font-size:13px;margin-bottom:6px">Player: audio 1 (voice) · <span id="vpath"></span></div>
-        <audio id="voice" preload="auto" controls style="width:100%"></audio>
+    <div class="card" style="margin-top:12px">
+      <div class="row" style="gap:16px;align-items:center">
+        <button id="btnReset">⏮️ Reset</button>
+        <button id="btnPlayVoice">▶️ Play voice</button>
+        <button id="btnPlayHum">▶️ Play humming</button>
+        <button id="btnPause">⏸️ Pause</button>
+        <div class="grow"></div>
+        <span class="pill" id="timepill">-- / -- s</span>
       </div>
-      <div class="grow">
-        <div class="muted" style="font-size:13px;margin-bottom:6px">Player: audio 2 (humming) · <span id="hpath"></span></div>
-        <audio id="hum" preload="auto" controls style="width:100%"></audio>
+      <div class="row" style="gap:16px;margin-top:10px">
+        <label>Cursor offset (ms)
+          <input id="offset" type="number" step="5" value="0" />
+        </label>
+        <label>F0 min/max (Hz)
+          <input id="fmin" type="number" value="60" style="width:90px"/> –
+          <input id="fmax" type="number" value="400" style="width:90px"/>
+        </label>
+        <div class="grow"></div>
+        <label class="muted">Seek</label>
+        <input id="seek" type="range" min="0" max="0" step="0.01" value="0" />
       </div>
     </div>
+
+    <div class="card" style="margin-top:16px">
+      <canvas id="pitch"></canvas>
+      <div class="legend">
+        <span class="dot" style="background:var(--accent)"></span><span class="muted">F0 curve</span>
+        <span class="dot" style="background:var(--danger)"></span><span class="muted">Playhead</span>
+      </div>
+    </div>
+
+    <div class="grid" style="margin-top:16px">
+      <div class="card">
+        <div style="font-size:13px;margin-bottom:6px" class="muted">Waveform: audio 1 (voice) · <span id="vpath"></span></div>
+        <div id="waveVoice" class="ws"></div>
+      </div>
+      <div class="card">
+        <div style="font-size:13px;margin-bottom:6px" class="muted">Waveform: audio 2 (humming) · <span id="hpath"></span></div>
+        <div id="waveHum" class="ws"></div>
+      </div>
+    </div>
+
+    <p class="muted" style="margin-top:12px">Tip: hard‑refresh (Ctrl/Cmd+Shift+R) after updates. If you notice a tiny drift, nudge the cursor offset.</p>
   </div>
-</div>
 
-<div class="card" style="margin-top:16px">
-  <canvas id="wave"></canvas>
-</div>
+  <!-- Local WaveSurfer build in your repo root -->
+  <script src="./wavesurfer.min.js"></script>
+  <script>
+  (function(){
+    const $ = (id)=>document.getElementById(id);
+    const qp = (k, def)=>{ const v=new URLSearchParams(location.search).get(k); return (v&&v.trim())||def; };
 
-<p class="muted" style="margin-top:12px">Tip: use <b>Ctrl/Cmd+Shift+R</b> to bypass cache after updates. If your files differ slightly in length, use the offset to micro‑sync.</p>
+    const voiceSrc = qp('voice','voice.mp3');
+    const humSrc   = qp('hum','humming.mp3');
+    const pitchSrc = qp('pitch','pitch.PitchTier');
+    $('vpath').textContent = voiceSrc; $('hpath').textContent = humSrc;
 
-  </div>  <script>
-  // ---------- helpers ----------
-  const $ = (id)=>document.getElementById(id);
-  const qp = (k, def)=>{ const v=new URLSearchParams(location.search).get(k); return (v&&v.trim())||def; };
+    // --- WaveSurfer instances ---
+    const waveVoice = WaveSurfer.create({
+      container: '#waveVoice',
+      waveColor: '#6ae2ff',
+      progressColor: '#6ae2ff',
+      cursorColor: '#ff6b6b',
+      height: 140,
+      normalize: true,
+      responsive: true,
+    });
+    const waveHum = WaveSurfer.create({
+      container: '#waveHum',
+      waveColor: '#8b7cff',
+      progressColor: '#8b7cff',
+      cursorColor: '#ff6b6b',
+      height: 140,
+      normalize: true,
+      responsive: true,
+    });
 
-  // Downsampled min/max waveform for efficiency
-  function buildWaveform(channelData, width){
-    const N = channelData.length;
-    const step = Math.ceil(N / width);
-    const peaks = new Float32Array(width*2); // [min,max] pairs
-    for(let i=0;i<width;i++){
-      const start = i*step;
-      const end = Math.min(start+step, N);
-      let min=1e9, max=-1e9;
-      for(let j=start;j<end;j++){ const s=channelData[j]; if(s<min)min=s; if(s>max)max=s; }
-      peaks[i*2] = isFinite(min)?min:0; peaks[i*2+1]=isFinite(max)?max:0;
+    waveVoice.load(voiceSrc);
+    waveHum.load(humSrc);
+
+    // --- PitchTier parsing & drawing ---
+    const pitchCanvas = $('pitch');
+    const ctx = pitchCanvas.getContext('2d');
+    let pts=[], xmin=0, xmax=1; // [{t,f0}]
+
+    function resizePitch(){
+      const dpr = Math.max(1, window.devicePixelRatio||1);
+      const cssW = pitchCanvas.clientWidth||1000;
+      const cssH = pitchCanvas.clientHeight||260;
+      pitchCanvas.width = Math.floor(cssW*dpr);
+      pitchCanvas.height= Math.floor(cssH*dpr);
+      ctx.setTransform(dpr,0,0,dpr,0,0);
+      renderPitch();
     }
-    return peaks;
-  }
+    window.addEventListener('resize', resizePitch);
 
-  function drawWave(ctx, peaks, color, W, H){
-    const mid = H/2; ctx.lineWidth = 1; ctx.strokeStyle = color; ctx.beginPath();
-    for(let x=0;x<peaks.length/2;x++){
-      const min = peaks[x*2], max = peaks[x*2+1];
-      const y1 = mid + min*mid; const y2 = mid + max*mid;
-      ctx.moveTo(x+0.5, y1); ctx.lineTo(x+0.5, y2);
-    }
-    ctx.stroke();
-  }
-
-  (async function main(){
-    const voicePath = qp('voice','voice.mp3');
-    const humPath   = qp('hum','humming.mp3');
-    $('vpath').textContent = voicePath; $('hpath').textContent = humPath;
-    $('voice').src = voicePath; $('hum').src = humPath;
-
-    const canvas = $('wave');
-    const ctx = canvas.getContext('2d');
-
-    function resize(){ const dpr = Math.max(1, window.devicePixelRatio||1); const cssW = canvas.clientWidth||1000; const cssH = canvas.clientHeight||260; canvas.width = Math.floor(cssW*dpr); canvas.height = Math.floor(cssH*dpr); ctx.setTransform(dpr,0,0,dpr,0,0); render(); }
-    window.addEventListener('resize', resize);
-
-    let vBuf=null, hBuf=null, vPeaks=null, hPeaks=null, duration=0;
-
-    async function decode(url){
-      const ac = new (window.AudioContext||window.webkitAudioContext)();
-      const ab = await fetch(url, {cache:'no-store'}).then(r=>r.arrayBuffer());
-      const buf = await ac.decodeAudioData(ab);
-      ac.close();
-      return buf;
-    }
-
-    function preparePeaks(){
-      const W = Math.max(600, canvas.clientWidth||1000); // pixel width to sample
-      if(vBuf && (!vPeaks || vPeaks.length/2!==W)) vPeaks = buildWaveform(vBuf.getChannelData(0), W);
-      if(hBuf && (!hPeaks || hPeaks.length/2!==W)) hPeaks = buildWaveform(hBuf.getChannelData(0), W);
+    function parsePitchTier(text){
+      const f = s => s ? parseFloat(s) : NaN;
+      const _xmin = (text.match(/xmin\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)/)||[])[1];
+      const _xmax = (text.match(/xmax\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)/)||[])[1];
+      const times = [...text.matchAll(/\bnumber\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)/g)].map(m=>f(m[1]));
+      const vals  = [...text.matchAll(/\bvalue\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)/g)].map(m=>f(m[1]));
+      const arr=[]; const n=Math.min(times.length, vals.length);
+      for(let i=0;i<n;i++){ const t=times[i], v=vals[i]; if(Number.isFinite(t)&&Number.isFinite(v)) arr.push({t,f0:v}); }
+      arr.sort((a,b)=>a.t-b.t);
+      return {arr, xmin: _xmin?parseFloat(_xmin):(arr[0]?.t||0), xmax: _xmax?parseFloat(_xmax):(arr[arr.length-1]?.t||1)};
     }
 
-    function render(){
-      const W = canvas.width; const H = canvas.height; // already in device pixels but ctx is scaled back
+    function renderPitch(){
+      const W = pitchCanvas.width, H = pitchCanvas.height; // device px but ctx scaled
       ctx.clearRect(0,0,W,H);
       ctx.fillStyle = '#0f1218'; ctx.fillRect(0,0,W,H);
-      // center line
-      ctx.strokeStyle = 'rgba(255,255,255,.08)'; ctx.beginPath(); ctx.moveTo(0,H/2); ctx.lineTo(W,H/2); ctx.stroke();
-      // grid light
-      for(let i=1;i<6;i++){ const y = (H/2) + i*(H/12); ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke(); ctx.beginPath(); const y2=(H/2)-i*(H/12); ctx.moveTo(0,y2); ctx.lineTo(W,y2); ctx.stroke(); }
-      // waves
-      if(vPeaks) drawWave(ctx, vPeaks, 'rgba(106,226,255,0.95)', W, H);
-      if(hPeaks) drawWave(ctx, hPeaks, 'rgba(139,124,255,0.75)', W, H);
+      // grid
+      ctx.strokeStyle = 'rgba(255,255,255,.08)';
+      for(let i=0;i<=5;i++){ const y = (H*(i/5)); ctx.beginPath(); ctx.moveTo(0,y+0.5); ctx.lineTo(W,y+0.5); ctx.stroke(); }
+      if(!pts.length) return;
+      const fmin = parseFloat($('fmin').value)||60; const fmax = parseFloat($('fmax').value)||400;
+      const T = xmax - xmin; if(T<=0) return;
+      // draw F0
+      ctx.strokeStyle = '#6ae2ff'; ctx.lineWidth = 2; ctx.beginPath();
+      for(let i=0;i<pts.length;i++){
+        const x = ((pts[i].t - xmin)/T) * (W-1);
+        const y = H - ((pts[i].f0 - fmin)/(fmax - fmin)) * (H-8) - 4; // small paddings
+        if(i===0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
       // cursor
       const offMs = parseFloat($('offset').value||'0')||0;
-      const master = (!voice.paused? voice : hum);
-      const t = (master.currentTime*1000 + offMs)/1000; // seconds
-      const dur = duration || master.duration || 1;
-      const x = Math.max(0, Math.min(W-1, Math.round((t/dur) * (W-1))));
-      ctx.strokeStyle = 'rgba(255,107,107,1)'; ctx.beginPath(); ctx.moveTo(x+0.5,0); ctx.lineTo(x+0.5,H); ctx.stroke();
+      const master = waveVoice.isPlaying()? waveVoice : (waveHum.isPlaying()? waveHum : waveVoice);
+      const cur = ((master.getCurrentTime()*1000 + offMs)/1000);
+      const x = ((cur - xmin)/(xmax - xmin)) * (W-1);
+      ctx.strokeStyle = '#ff6b6b'; ctx.beginPath(); ctx.moveTo(x+0.5,0); ctx.lineTo(x+0.5,H); ctx.stroke();
     }
 
-    // Load & draw
-    try{ vBuf = await decode(voicePath); }catch(e){ console.warn('voice decode error', e); }
-    try{ hBuf = await decode(humPath); }catch(e){ console.warn('hum decode error', e); }
-    duration = Math.max(vBuf?.duration||0, hBuf?.duration||0);
-    resize(); preparePeaks(); render();
+    // Load the PitchTier
+    fetch(pitchSrc, {cache:'no-store'}).then(r=>{
+      if(!r.ok) throw new Error('PitchTier not found'); return r.text();
+    }).then(txt=>{
+      const res = parsePitchTier(txt); pts = res.arr; xmin = res.xmin; xmax = res.xmax; resizePitch();
+    }).catch(err=>{ console.warn('PitchTier load error', err); resizePitch(); });
 
-    // ----- players & sync -----
-    const voice=$('voice'), hum=$('hum'), seek=$('seek'), pill=$('timepill');
-    function updatePill(){ const m = (!voice.paused? voice : hum); pill.textContent = `${(m.currentTime||0).toFixed(2)} / ${(m.duration||duration||0).toFixed(2)} s`; }
-    function setAll(sec){ voice.currentTime=sec; hum.currentTime=sec; seek.value=String(sec); render(); updatePill(); }
+    // --- sync logic ---
+    const seek = $('seek'), pill = $('timepill');
+    function updateSeekMax(){ const d = Math.max(waveVoice.getDuration()||0, waveHum.getDuration()||0); seek.max = d? String(d) : '0'; }
+    function setAll(sec){ waveVoice.seekTo((sec/(waveVoice.getDuration()||1))||0); waveHum.seekTo((sec/(waveHum.getDuration()||1))||0); seek.value=String(sec); }
 
-    voice.addEventListener('loadedmetadata',()=>{ seek.max=String(voice.duration||duration||0); updatePill(); });
-    hum.addEventListener('loadedmetadata',()=>{ if(!(+seek.max)) seek.max=String(hum.duration||duration||0); updatePill(); });
+    waveVoice.on('ready', updateSeekMax);
+    waveHum.on('ready', updateSeekMax);
 
-    voice.addEventListener('timeupdate',()=>{ if(!voice.paused){ hum.currentTime=voice.currentTime; seek.value=String(voice.currentTime); updatePill(); } render(); });
-    hum.addEventListener('timeupdate',()=>{ if(!hum.paused){ voice.currentTime=hum.currentTime; seek.value=String(hum.currentTime); updatePill(); } render(); });
+    // mirror play/pause
+    waveVoice.on('play', ()=>{ if(!waveHum.isPlaying()) waveHum.play(); });
+    waveHum.on('play',   ()=>{ if(!waveVoice.isPlaying()) waveVoice.play(); });
+    waveVoice.on('pause',()=>{ if(waveHum.isPlaying()) waveHum.pause(); });
+    waveHum.on('pause',  ()=>{ if(waveVoice.isPlaying()) waveVoice.pause(); });
 
-    $('btnPlayVoice').onclick=()=>{ voice.play(); hum.play(); };
-    $('btnPlayHum').onclick=()=>{ hum.play(); voice.play(); };
-    $('btnPause').onclick=()=>{ voice.pause(); hum.pause(); };
-    $('btnReset').onclick=()=> setAll(0);
-    seek.oninput=(e)=> setAll(parseFloat(e.target.value));
-    $('offset').oninput=render;
+    // mirror seeking
+    waveVoice.on('seek', (rel)=>{ waveHum.seekTo(rel); seek.value=String(rel*(waveVoice.getDuration()||0)); });
+    waveHum.on('seek',   (rel)=>{ waveVoice.seekTo(rel); seek.value=String(rel*(waveHum.getDuration()||0)); });
 
-    // keep cursor smooth
-    (function raf(){ render(); requestAnimationFrame(raf); })();
+    // soft lock-step while playing + UI updates
+    setInterval(()=>{
+      const m = waveVoice.isPlaying()? waveVoice : (waveHum.isPlaying()? waveHum : waveVoice);
+      const t = m.getCurrentTime()||0, d = m.getDuration()||0;
+      pill.textContent = `${t.toFixed(2)} / ${d.toFixed(2)} s`;
+      seek.value = String(t);
+      renderPitch();
+    }, 60);
+
+    // Buttons
+    $('btnPlayVoice').onclick = ()=> waveVoice.play();
+    $('btnPlayHum').onclick   = ()=> waveHum.play();
+    $('btnPause').onclick     = ()=> { waveVoice.pause(); waveHum.pause(); };
+    $('btnReset').onclick     = ()=> setAll(0);
+    seek.oninput = (e)=> setAll(parseFloat(e.target.value)||0);
+    $('offset').oninput = renderPitch; $('fmin').oninput = renderPitch; $('fmax').oninput = renderPitch;
   })();
-  </script></body>
+  </script>
+</body>
 </html>
