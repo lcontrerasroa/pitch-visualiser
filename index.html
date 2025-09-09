@@ -1,212 +1,160 @@
 <!doctype html>
+
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Pitch + Waveforms – synced (WaveSurfer, local build)</title>
+  <title>Prosody Player</title>
   <style>
-    :root{--bg:#0b0c0f;--ink:#e7e9ee;--muted:#9aa3b2;--panel:#14161a;--accent:#6ae2ff;--accent2:#8b7cff;--danger:#ff6b6b}
+    :root{--bg:#0b0c0f;--ink:#e7e9ee;--muted:#9aa3b2;--panel:#14161a;--accent:#6ae2ff;--intensity:#00e08a;--cursor:#ff6b6b}
     html,body{height:100%}
     body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial}
     .wrap{max-width:1100px;margin:0 auto;padding:24px}
-    .h1{font-weight:700;font-size:26px;margin:0 0 6px}
-    .muted{color:var(--muted)}
-    .card{background:var(--panel);border:1px solid rgba(255,255,255,.08);border-radius:16px;padding:16px 18px;box-shadow:0 12px 28px rgba(0,0,0,.25)}
-    .grid{display:grid;gap:16px}
-    @media(min-width:900px){.grid{grid-template-columns:1fr 1fr}}
-    .row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
-    .grow{flex:1 1 auto}
-    input[type=number], input[type=range]{background:#0f1218;border:1px solid rgba(255,255,255,.12);color:var(--ink);border-radius:10px;padding:8px 10px}
-    input[type=range]{width:100%}
-    button{background:#0f1218;border:1px solid rgba(255,255,255,.12);color:var(--ink);border-radius:999px;padding:8px 14px;cursor:pointer}
-    .pill{display:inline-block;padding:2px 8px;border-radius:999px;background:#0f1218;border:1px solid rgba(255,255,255,.12);font-size:12px;color:var(--muted)}
-    #pitch{display:block;width:100%;height:260px;border-radius:10px;background:linear-gradient(#0f1218,#0f1218) padding-box,linear-gradient(180deg,rgba(255,255,255,.08),rgba(255,255,255,.06)) border-box;border:1px solid rgba(255,255,255,.08)}
-    .legend{display:flex;gap:14px;align-items:center;margin-top:8px}
-    .dot{width:10px;height:10px;border-radius:50%}
-    .ws{height:140px;background:#0f1218;border-radius:10px}
+    .card{position:relative;background:var(--panel);border:1px solid rgba(255,255,255,.08);border-radius:16px;box-shadow:0 12px 28px rgba(0,0,0,.25);overflow:hidden}
+    .controls{display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid rgba(255,255,255,.06)}
+    .btn{background:#0f1218;border:1px solid rgba(255,255,255,.12);color:var(--ink);border-radius:999px;padding:8px 14px;cursor:pointer}
+    .pill{margin-left:auto;display:inline-block;padding:2px 8px;border-radius:999px;background:#0f1218;border:1px solid rgba(255,255,255,.12);font-size:12px;color:var(--muted)}
+    #voiceWave{height:180px}
+    #overlay{position:absolute;left:0;top:49px;right:0;height:180px;pointer-events:none}
   </style>
 </head>
 <body>
   <div class="wrap">
-    <div class="h1">Interactive PitchTier + dual waveforms (local assets)</div>
-    <p class="muted" style="margin-top:0">Files must be at repo root: <code>pitch.PitchTier</code>, <code>voice.mp3</code>, <code>humming.mp3</code>. Play either; the <span style="color:var(--danger)">red cursor</span> drives both the pitch graph and the other track. Override names with <code>?pitch=…&voice=…&hum=…</code>.</p>
-
-    <div class="card" style="margin-top:12px">
-      <div class="row" style="gap:16px;align-items:center">
-        <button id="btnReset">⏮️ Reset</button>
-        <button id="btnPlayVoice">▶️ Play voice</button>
-        <button id="btnPlayHum">▶️ Play humming</button>
-        <button id="btnPause">⏸️ Pause</button>
-        <div class="grow"></div>
-        <span class="pill" id="timepill">-- / -- s</span>
+    <div class="card">
+      <div class="controls">
+        <button class="btn" id="play">▶️</button>
+        <button class="btn" id="pause">⏸️</button>
+        <span class="pill" id="time">-- / --</span>
       </div>
-      <div class="row" style="gap:16px;margin-top:10px">
-        <label>Cursor offset (ms)
-          <input id="offset" type="number" step="5" value="0" />
-        </label>
-        <label>F0 min/max (Hz)
-          <input id="fmin" type="number" value="60" style="width:90px"/> –
-          <input id="fmax" type="number" value="400" style="width:90px"/>
-        </label>
-        <div class="grow"></div>
-        <label class="muted">Seek</label>
-        <input id="seek" type="range" min="0" max="0" step="0.01" value="0" />
-      </div>
+      <div id="voiceWave"></div>
+      <canvas id="overlay"></canvas>
+      <audio id="voice" preload="auto" hidden></audio>
     </div>
-
-    <div class="card" style="margin-top:16px">
-      <canvas id="pitch"></canvas>
-      <div class="legend">
-        <span class="dot" style="background:var(--accent)"></span><span class="muted">F0 curve</span>
-        <span class="dot" style="background:var(--danger)"></span><span class="muted">Playhead</span>
-      </div>
-    </div>
-
-    <div class="grid" style="margin-top:16px">
-      <div class="card">
-        <div style="font-size:13px;margin-bottom:6px" class="muted">Waveform: audio 1 (voice) · <span id="vpath"></span></div>
-        <div id="waveVoice" class="ws"></div>
-      </div>
-      <div class="card">
-        <div style="font-size:13px;margin-bottom:6px" class="muted">Waveform: audio 2 (humming) · <span id="hpath"></span></div>
-        <div id="waveHum" class="ws"></div>
-      </div>
-    </div>
-
-    <p class="muted" style="margin-top:12px">Tip: hard‑refresh (Ctrl/Cmd+Shift+R) after updates. If you notice a tiny drift, nudge the cursor offset.</p>
-  </div>
-
-  <!-- Local WaveSurfer build in your repo root -->
-  <script src="./wavesurfer.min.js"></script>
-  <script>
+  </div>  <!-- Local WaveSurfer build (placed in repo root) -->  <script src="./wavesurfer.min.js"></script>  <script>
   (function(){
-    const $ = (id)=>document.getElementById(id);
-    const qp = (k, def)=>{ const v=new URLSearchParams(location.search).get(k); return (v&&v.trim())||def; };
+    const qp = (k, d) => (new URLSearchParams(location.search).get(k) || d);
+    const src = qp('voice','voice.mp3');
 
-    const voiceSrc = qp('voice','voice.mp3');
-    const humSrc   = qp('hum','humming.mp3');
-    const pitchSrc = qp('pitch','pitch.PitchTier');
-    $('vpath').textContent = voiceSrc; $('hpath').textContent = humSrc;
-
-    // --- WaveSurfer instances ---
-    const waveVoice = WaveSurfer.create({
-      container: '#waveVoice',
-      waveColor: '#6ae2ff',
+    // ---------- WaveSurfer (waveform + playback) ----------
+    const ws = WaveSurfer.create({
+      container: '#voiceWave',
+      height: 180,
+      waveColor: '#2b97ad',
       progressColor: '#6ae2ff',
-      cursorColor: '#ff6b6b',
-      height: 140,
+      cursorColor: 'transparent',
       normalize: true,
       responsive: true,
+      dragToSeek: true,
     });
-    const waveHum = WaveSurfer.create({
-      container: '#waveHum',
-      waveColor: '#8b7cff',
-      progressColor: '#8b7cff',
-      cursorColor: '#ff6b6b',
-      height: 140,
-      normalize: true,
-      responsive: true,
-    });
+    ws.load(src);
 
-    waveVoice.load(voiceSrc);
-    waveHum.load(humSrc);
+    const timePill = document.getElementById('time');
+    document.getElementById('play').onclick = ()=> ws.play();
+    document.getElementById('pause').onclick = ()=> ws.pause();
 
-    // --- PitchTier parsing & drawing ---
-    const pitchCanvas = $('pitch');
-    const ctx = pitchCanvas.getContext('2d');
-    let pts=[], xmin=0, xmax=1; // [{t,f0}]
+    ws.on('decode', dur => timePill.textContent = `0.00 / ${dur.toFixed(2)} s`);
+    ws.on('timeupdate', t => timePill.textContent = `${t.toFixed(2)} / ${(ws.getDuration()||0).toFixed(2)} s`);
 
-    function resizePitch(){
-      const dpr = Math.max(1, window.devicePixelRatio||1);
-      const cssW = pitchCanvas.clientWidth||1000;
-      const cssH = pitchCanvas.clientHeight||260;
-      pitchCanvas.width = Math.floor(cssW*dpr);
-      pitchCanvas.height= Math.floor(cssH*dpr);
+    // ---------- Overlay (pitch + intensity + cursor) ----------
+    const overlay = document.getElementById('overlay');
+    const ctx = overlay.getContext('2d');
+    function resizeOverlay(){
+      const dpr = Math.max(1, devicePixelRatio||1);
+      const {width, height} = ws.getWrapper().getBoundingClientRect();
+      overlay.width = Math.max(1, Math.floor(width*dpr));
+      overlay.height = Math.max(1, Math.floor(height*dpr));
+      overlay.style.width = width+"px"; overlay.style.height = height+"px";
       ctx.setTransform(dpr,0,0,dpr,0,0);
-      renderPitch();
-    }
-    window.addEventListener('resize', resizePitch);
-
-    function parsePitchTier(text){
-      const f = s => s ? parseFloat(s) : NaN;
-      const _xmin = (text.match(/xmin\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)/)||[])[1];
-      const _xmax = (text.match(/xmax\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)/)||[])[1];
-      const times = [...text.matchAll(/\bnumber\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)/g)].map(m=>f(m[1]));
-      const vals  = [...text.matchAll(/\bvalue\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)/g)].map(m=>f(m[1]));
-      const arr=[]; const n=Math.min(times.length, vals.length);
-      for(let i=0;i<n;i++){ const t=times[i], v=vals[i]; if(Number.isFinite(t)&&Number.isFinite(v)) arr.push({t,f0:v}); }
-      arr.sort((a,b)=>a.t-b.t);
-      return {arr, xmin: _xmin?parseFloat(_xmin):(arr[0]?.t||0), xmax: _xmax?parseFloat(_xmax):(arr[arr.length-1]?.t||1)};
+      drawOverlay();
     }
 
-    function renderPitch(){
-      const W = pitchCanvas.width, H = pitchCanvas.height; // device px but ctx scaled
+    // Compute pitch (autocorrelation) + intensity (RMS) from decoded PCM
+    let feats = null; // [{t, f0 (Hz or 0), rms}]
+    async function computeFeatures(){
+      try{
+        // We already loaded audio via WS, but we re-fetch for analysis to access PCM easily
+        const ac = new (window.AudioContext||window.webkitAudioContext)();
+        const ab = await fetch(src, {cache:'no-store'}).then(r=>r.arrayBuffer());
+        const buf = await ac.decodeAudioData(ab);
+        const s = buf.getChannelData(0);
+        const sr = buf.sampleRate;
+        const frame = 2048, hop = 256; // ~46 ms frame, ~6 ms hop at 44.1kHz
+        const minF = 60, maxF = 400;
+        const minLag = Math.floor(sr/maxF), maxLag = Math.floor(sr/minF);
+        const out = [];
+        const hann = new Float32Array(frame); for(let i=0;i<frame;i++){ hann[i] = 0.5*(1 - Math.cos(2*Math.PI*i/(frame-1))); }
+        for(let i=0;i+frame < s.length; i+=hop){
+          // window
+          let rms=0; for(let j=0;j<frame;j++){ const v = s[i+j]*hann[j]; rms += v*v; }
+          rms = Math.sqrt(rms/frame);
+          // skip voiceless
+          let bestLag = 0, best = 0;
+          for(let lag=minLag; lag<=maxLag; lag++){
+            let corr=0, norm1=0, norm2=0;
+            for(let j=0;j<frame-lag;j++){
+              const a = s[i+j]*hann[j];
+              const b = s[i+j+lag]*hann[j+lag];
+              corr += a*b; norm1 += a*a; norm2 += b*b;
+            }
+            const denom = Math.sqrt(norm1*norm2)+1e-12;
+            const c = corr/denom;
+            if(c>best){best=c; bestLag=lag;}
+          }
+          const thresh = 0.6; // correlation threshold for voicing
+          const f0 = (best>thresh) ? (sr/bestLag) : 0;
+          out.push({ t: i/sr, f0, rms });
+        }
+        ac.close();
+        // light smoothing
+        for(let k=1;k<out.length-1;k++){
+          out[k].f0 = out[k-1].f0*0.25 + out[k].f0*0.5 + out[k+1].f0*0.25;
+          out[k].rms = out[k-1].rms*0.25 + out[k].rms*0.5 + out[k+1].rms*0.25;
+        }
+        feats = out;
+        resizeOverlay();
+      }catch(e){ console.warn('Analysis failed', e); }
+    }
+
+    function drawOverlay(){
+      const W = overlay.width, H = overlay.height; if(!W||!H) return;
       ctx.clearRect(0,0,W,H);
-      ctx.fillStyle = '#0f1218'; ctx.fillRect(0,0,W,H);
-      // grid
-      ctx.strokeStyle = 'rgba(255,255,255,.08)';
-      for(let i=0;i<=5;i++){ const y = (H*(i/5)); ctx.beginPath(); ctx.moveTo(0,y+0.5); ctx.lineTo(W,y+0.5); ctx.stroke(); }
-      if(!pts.length) return;
-      const fmin = parseFloat($('fmin').value)||60; const fmax = parseFloat($('fmax').value)||400;
-      const T = xmax - xmin; if(T<=0) return;
-      // draw F0
-      ctx.strokeStyle = '#6ae2ff'; ctx.lineWidth = 2; ctx.beginPath();
-      for(let i=0;i<pts.length;i++){
-        const x = ((pts[i].t - xmin)/T) * (W-1);
-        const y = H - ((pts[i].f0 - fmin)/(fmax - fmin)) * (H-8) - 4; // small paddings
-        if(i===0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      // intensity area (bottom band)
+      if(feats && feats.length){
+        const dur = ws.getDuration()|| (feats.at(-1)?.t||1);
+        ctx.fillStyle = 'rgba(0,224,138,0.18)';
+        ctx.beginPath(); ctx.moveTo(0,H);
+        feats.forEach(p=>{
+          const x = (p.t/dur)*W; const y = H - Math.min(H, (p.rms*1.8)*H);
+          ctx.lineTo(x,y);
+        });
+        ctx.lineTo(W,H); ctx.closePath(); ctx.fill();
       }
-      ctx.stroke();
-      // cursor
-      const offMs = parseFloat($('offset').value||'0')||0;
-      const master = waveVoice.isPlaying()? waveVoice : (waveHum.isPlaying()? waveHum : waveVoice);
-      const cur = ((master.getCurrentTime()*1000 + offMs)/1000);
-      const x = ((cur - xmin)/(xmax - xmin)) * (W-1);
-      ctx.strokeStyle = '#ff6b6b'; ctx.beginPath(); ctx.moveTo(x+0.5,0); ctx.lineTo(x+0.5,H); ctx.stroke();
+      // pitch curve
+      if(feats && feats.length){
+        const fmin=60, fmax=400; const dur = ws.getDuration()|| (feats.at(-1)?.t||1);
+        ctx.strokeStyle = '#6ae2ff'; ctx.lineWidth = 2; ctx.beginPath(); let started=false;
+        feats.forEach(p=>{
+          if(p.f0>0){
+            const x = (p.t/dur)*W;
+            const y = H - ((p.f0 - fmin)/(fmax - fmin))*H;
+            if(!started){ctx.moveTo(x,y); started=true;} else ctx.lineTo(x,y);
+          } else {
+            started=false;
+          }
+        });
+        ctx.stroke();
+      }
+      // playhead
+      const t = ws.getCurrentTime();
+      const dur = ws.getDuration()||1; const x = (t/dur)*W;
+      ctx.strokeStyle = 'var(--cursor)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(x+0.5,0); ctx.lineTo(x+0.5,H); ctx.stroke();
     }
 
-    // Load the PitchTier
-    fetch(pitchSrc, {cache:'no-store'}).then(r=>{
-      if(!r.ok) throw new Error('PitchTier not found'); return r.text();
-    }).then(txt=>{
-      const res = parsePitchTier(txt); pts = res.arr; xmin = res.xmin; xmax = res.xmax; resizePitch();
-    }).catch(err=>{ console.warn('PitchTier load error', err); resizePitch(); });
-
-    // --- sync logic ---
-    const seek = $('seek'), pill = $('timepill');
-    function updateSeekMax(){ const d = Math.max(waveVoice.getDuration()||0, waveHum.getDuration()||0); seek.max = d? String(d) : '0'; }
-    function setAll(sec){ waveVoice.seekTo((sec/(waveVoice.getDuration()||1))||0); waveHum.seekTo((sec/(waveHum.getDuration()||1))||0); seek.value=String(sec); }
-
-    waveVoice.on('ready', updateSeekMax);
-    waveHum.on('ready', updateSeekMax);
-
-    // mirror play/pause
-    waveVoice.on('play', ()=>{ if(!waveHum.isPlaying()) waveHum.play(); });
-    waveHum.on('play',   ()=>{ if(!waveVoice.isPlaying()) waveVoice.play(); });
-    waveVoice.on('pause',()=>{ if(waveHum.isPlaying()) waveHum.pause(); });
-    waveHum.on('pause',  ()=>{ if(waveVoice.isPlaying()) waveVoice.pause(); });
-
-    // mirror seeking
-    waveVoice.on('seek', (rel)=>{ waveHum.seekTo(rel); seek.value=String(rel*(waveVoice.getDuration()||0)); });
-    waveHum.on('seek',   (rel)=>{ waveVoice.seekTo(rel); seek.value=String(rel*(waveHum.getDuration()||0)); });
-
-    // soft lock-step while playing + UI updates
-    setInterval(()=>{
-      const m = waveVoice.isPlaying()? waveVoice : (waveHum.isPlaying()? waveHum : waveVoice);
-      const t = m.getCurrentTime()||0, d = m.getDuration()||0;
-      pill.textContent = `${t.toFixed(2)} / ${d.toFixed(2)} s`;
-      seek.value = String(t);
-      renderPitch();
-    }, 60);
-
-    // Buttons
-    $('btnPlayVoice').onclick = ()=> waveVoice.play();
-    $('btnPlayHum').onclick   = ()=> waveHum.play();
-    $('btnPause').onclick     = ()=> { waveVoice.pause(); waveHum.pause(); };
-    $('btnReset').onclick     = ()=> setAll(0);
-    seek.oninput = (e)=> setAll(parseFloat(e.target.value)||0);
-    $('offset').oninput = renderPitch; $('fmin').oninput = renderPitch; $('fmax').oninput = renderPitch;
+    // redraw on resize and while playing
+    ws.on('ready', () => { resizeOverlay(); computeFeatures(); });
+    ws.on('redraw', resizeOverlay);
+    ws.on('timeupdate', drawOverlay);
+    window.addEventListener('resize', resizeOverlay);
   })();
-  </script>
-</body>
+  </script></body>
 </html>
