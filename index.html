@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Prosody Player</title>
   <style>
-    :root{--bg:#0b0c0f;--ink:#e7e9ee;--muted:#9aa3b2;--panel:#14161a;--accent:#6ae2ff;--intensity:#00e08a;--cursor:#ff6b6b}
+    :root{--bg:#0b0c0f;--ink:#e7e9ee;--muted:#9aa3b2;--panel:#14161a;--accent:#6ae2ff;--cursor:#ff6b6b}
     html,body{height:100%}
     body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial}
     .wrap{max-width:1100px;margin:0 auto;padding:24px}
@@ -14,10 +14,9 @@
     .controls{display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid rgba(255,255,255,.06)}
     .btn{background:#0f1218;border:1px solid rgba(255,255,255,.12);color:var(--ink);border-radius:999px;padding:8px 14px;cursor:pointer}
     .pill{margin-left:auto;display:inline-block;padding:2px 8px;border-radius:999px;background:#0f1218;border:1px solid rgba(255,255,255,.12);font-size:12px;color:var(--muted)}
-    .grid{display:grid;gap:16px}
     #overview{height:72px}
-    #detail{height:180px}
-    #overlay{position:absolute;left:0;right:0;bottom:0;height:180px;pointer-events:none}
+    #detail{height:180px;border-top:1px solid rgba(255,255,255,.06)}
+    #pitch{display:block;width:100%;height:140px;border-top:1px solid rgba(255,255,255,.06)}
   </style>
 </head>
 <body>
@@ -32,9 +31,9 @@
       </div>
       <div id="overview"></div>
       <div id="detail"></div>
-      <canvas id="overlay"></canvas>
+      <canvas id="pitch"></canvas>
     </div>
-  </div>  <!-- Local WaveSurfer build (placed in repo root) -->  <script src="./wavesurfer.min.js"></script>  <script>
+  </div>  <script src="./wavesurfer.min.js"></script>  <script>
   (function(){
     const qp = (k, d) => (new URLSearchParams(location.search).get(k) || d);
     const src = qp('voice','voice.mp3');
@@ -61,7 +60,7 @@
       height: 180,
       waveColor: '#2b97ad',
       progressColor: '#6ae2ff',
-      cursorColor: '#ff6b6b',
+      cursorColor: '#6ae2ff',
       barWidth: 2,
       barGap: 1,
       barRadius: 1,
@@ -77,13 +76,11 @@
     wsDetail.load(src);
 
     // Controls
-    const playBtn = document.getElementById('play');
-    const pauseBtn = document.getElementById('pause');
     const timePill = document.getElementById('time');
     document.getElementById('zoomIn').onclick  = ()=>{ pxPerSec=Math.min(600, pxPerSec*1.25); wsDetail.setOptions({minPxPerSec:pxPerSec}); };
     document.getElementById('zoomOut').onclick = ()=>{ pxPerSec=Math.max(40,  pxPerSec/1.25); wsDetail.setOptions({minPxPerSec:pxPerSec}); };
-    playBtn.onclick  = ()=> wsDetail.play();
-    pauseBtn.onclick = ()=> wsDetail.pause();
+    document.getElementById('play').onclick  = ()=> wsDetail.play();
+    document.getElementById('pause').onclick = ()=> wsDetail.pause();
 
     // Keep overview position in sync with the playing detail view
     function syncOverview(){
@@ -92,76 +89,84 @@
       if (wsOverview.setTime) wsOverview.setTime(t); else wsOverview.seekTo(t/d);
     }
 
-    wsDetail.on('timeupdate', ()=>{ syncOverview(); const t=wsDetail.getCurrentTime()||0, d=wsDetail.getDuration()||0; timePill.textContent = `${t.toFixed(2)} / ${d.toFixed(2)} s`; drawOverlay(); });
-    wsDetail.on('seek',      ()=>{ syncOverview(); drawOverlay(); });
+    wsDetail.on('timeupdate', ()=>{ syncOverview(); const t=wsDetail.getCurrentTime()||0, d=wsDetail.getDuration()||0; timePill.textContent = `${t.toFixed(2)} / ${d.toFixed(2)} s`; drawPitch(); });
+    wsDetail.on('seek',      ()=>{ syncOverview(); drawPitch(); });
     wsOverview.on('seek',    (rel)=> wsDetail.seekTo(rel));
 
-    // ---------- Overlay: envelope + peak highlights + playhead ----------
-    const overlay = document.getElementById('overlay');
-    const ctx = overlay.getContext('2d');
+    // ---------- Pitch strip (separate canvas) ----------
+    const pitchCanvas = document.getElementById('pitch');
+    const pctx = pitchCanvas.getContext('2d');
 
-    function resizeOverlay(){
+    function resizePitch(){
       const dpr = Math.max(1, devicePixelRatio||1);
       const rect = wsDetail.getWrapper().getBoundingClientRect();
-      overlay.width = Math.max(1, Math.floor(rect.width*dpr));
-      overlay.height = Math.max(1, Math.floor(rect.height*dpr));
-      overlay.style.width = rect.width+"px"; overlay.style.height = rect.height+"px";
-      ctx.setTransform(dpr,0,0,dpr,0,0);
-      drawOverlay();
+      pitchCanvas.width  = Math.max(1, Math.floor(rect.width*dpr));
+      pitchCanvas.height = Math.max(1, Math.floor(pitchCanvas.clientHeight*dpr || 140*dpr));
+      pitchCanvas.style.width = rect.width+"px"; pitchCanvas.style.height = (pitchCanvas.height/dpr)+"px";
+      pctx.setTransform(dpr,0,0,dpr,0,0);
+      drawPitch();
     }
 
-    // Lightweight envelope (RMS) from decoded PCM
-    let env = null; // [{t, rms}], plus threshold
-    async function computeEnvelope(){
+    let f0pts = null; // [{t,f0}], Hz
+    async function computePitch(){
       try{
         const ac = new (window.AudioContext||window.webkitAudioContext)();
         const ab = await fetch(src, {cache:'no-store'}).then(r=>r.arrayBuffer());
         const buf = await ac.decodeAudioData(ab);
-        const s = buf.getChannelData(0), sr=buf.sampleRate;
-        const frame = 2048, hop = 256; // ~46ms / ~6ms @44.1kHz
+        const s = buf.getChannelData(0); const sr = buf.sampleRate;
+        const frame=2048, hop=256; // ~46 ms / ~6 ms
+        const minF=60, maxF=400; const minLag=Math.floor(sr/maxF), maxLag=Math.floor(sr/minF);
+        const window = new Float32Array(frame); for(let i=0;i<frame;i++){ window[i]=0.5*(1-Math.cos(2*Math.PI*i/(frame-1))); }
         const out=[];
-        for(let i=0;i+frame<s.length;i+=hop){
-          let e=0; for(let j=0;j<frame;j++){ const v=s[i+j]; e+=v*v; }
-          const rms = Math.sqrt(e/frame);
-          out.push({t:i/sr, rms});
+        for(let i=0;i+frame<s.length; i+=hop){
+          let best=0, lagBest=0; let n1=0,n2=0,corr=0;
+          // Precompute windowed frame
+          const a = new Float32Array(frame);
+          for(let j=0;j<frame;j++){ a[j]=s[i+j]*window[j]; }
+          const energyA = a.reduce((q,v)=>q+v*v,0);
+          for(let lag=minLag; lag<=maxLag; lag++){
+            corr=0; n1=0; n2=0;
+            for(let j=0;j<frame-lag;j++){
+              const x=a[j]; const y=s[i+j+lag]*window[j+lag];
+              corr += x*y; n1 += x*x; n2 += y*y;
+            }
+            const c = corr/Math.sqrt((n1||1e-12)*(n2||1e-12));
+            if(c>best){best=c; lagBest=lag;}
+          }
+          const cth=0.6; const f0 = (best>cth)? (sr/lagBest) : 0;
+          out.push({t:i/sr, f0});
         }
-        // smooth & threshold
-        for(let k=1;k<out.length-1;k++){ out[k].rms = out[k-1].rms*0.25 + out[k].rms*0.5 + out[k+1].rms*0.25; }
-        const arr = out.map(p=>p.rms).slice().sort((a,b)=>a-b);
-        const q = v=>arr[Math.min(arr.length-1, Math.max(0, Math.floor(v*(arr.length-1))))];
-        const thr = q(0.85); // highlight top 15%
-        env = {pts:out, thr};
-        resizeOverlay();
-        ac.close();
-      }catch(e){ console.warn('Envelope failed', e); }
+        // smooth
+        for(let k=1;k<out.length-1;k++){ out[k].f0 = out[k-1].f0*0.25 + out[k].f0*0.5 + out[k+1].f0*0.25; }
+        f0pts = out; ac.close(); resizePitch();
+      }catch(e){ console.warn('Pitch analysis failed', e); }
     }
 
-    function drawOverlay(){
-      const W = overlay.width, H = overlay.height; if(!W||!H) return; ctx.clearRect(0,0,W,H);
-      if(env){
-        const dur = wsDetail.getDuration() || (env.pts.at(-1)?.t || 1);
-        // area envelope
-        ctx.fillStyle = 'rgba(0,224,138,0.18)';
-        ctx.beginPath(); ctx.moveTo(0,H);
-        env.pts.forEach(p=>{ const x=(p.t/dur)*W; const y=H - Math.min(H, (p.rms*1.8)*H); ctx.lineTo(x,y); });
-        ctx.lineTo(W,H); ctx.closePath(); ctx.fill();
-        // highlight high-energy regions (proxy for stress)
-        ctx.fillStyle = 'rgba(255,200,80,0.18)';
-        const thr = env.thr;
-        for(let i=0;i<env.pts.length;i++){
-          const p = env.pts[i]; if(p.rms<thr) continue; const x=(p.t/dur)*W; ctx.fillRect(x-1, 0, 2, H);
+    function drawPitch(){
+      const W = pitchCanvas.width, H = pitchCanvas.height; if(!W||!H) return; pctx.clearRect(0,0,W,H);
+      // subtle grid
+      pctx.strokeStyle = 'rgba(255,255,255,.06)';
+      for(let i=1;i<=3;i++){ const y=(H*i/4); pctx.beginPath(); pctx.moveTo(0,y+0.5); pctx.lineTo(W,y+0.5); pctx.stroke(); }
+
+      if(f0pts && f0pts.length){
+        const fmin=60, fmax=400; const dur = wsDetail.getDuration() || (f0pts.at(-1)?.t || 1);
+        pctx.strokeStyle = '#6ae2ff'; pctx.lineWidth = 2; pctx.beginPath(); let on=false;
+        for(const p of f0pts){
+          if(p.f0>0){
+            const x = (p.t/dur)*W; const y = H - ((p.f0 - fmin)/(fmax - fmin))*H;
+            if(!on){pctx.moveTo(x,y); on=true;} else pctx.lineTo(x,y);
+          } else { on=false; }
         }
-        // envelope line
-        ctx.strokeStyle = '#00e08a'; ctx.lineWidth = 2; ctx.beginPath(); let started=false;
-        env.pts.forEach(p=>{ const x=(p.t/dur)*W; const y=H - Math.min(H, (p.rms*1.8)*H); if(!started){ctx.moveTo(x,y); started=true;} else ctx.lineTo(x,y); }); ctx.stroke();
+        pctx.stroke();
       }
       // playhead
-      const t = wsDetail.getCurrentTime(); const d = wsDetail.getDuration()||1; const x=(t/d)*W; ctx.strokeStyle = 'var(--cursor)'; ctx.lineWidth=2; ctx.beginPath(); ctx.moveTo(x+0.5,0); ctx.lineTo(x+0.5,H); ctx.stroke();
+      const t = wsDetail.getCurrentTime(); const d = wsDetail.getDuration()||1; const x=(t/d)*W;
+      pctx.strokeStyle = 'var(--cursor)'; pctx.lineWidth=2; pctx.beginPath(); pctx.moveTo(x+0.5,0); pctx.lineTo(x+0.5,H); pctx.stroke();
     }
 
-    wsDetail.on('ready', ()=>{ resizeOverlay(); computeEnvelope(); });
-    wsDetail.on('redraw', resizeOverlay);
-    window.addEventListener('resize', resizeOverlay);
+    wsDetail.on('ready', ()=>{ computePitch(); });
+    wsDetail.on('redraw', resizePitch);
+    window.addEventListener('resize', resizePitch);
   })();
   </script></body>
 </html>
