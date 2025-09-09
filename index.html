@@ -4,9 +4,9 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Pitch visualiser – Praat PitchTier + dual audio (vanilla SVG)</title>
+  <title>Waveform visualiser – dual audio (vanilla JS, no CDN)</title>
   <style>
-    :root{--bg:#0b0c0f;--ink:#e7e9ee;--muted:#9aa3b2;--panel:#14161a;--accent:#6ae2ff;--danger:#ff6b6b}
+    :root{--bg:#0b0c0f;--ink:#e7e9ee;--muted:#9aa3b2;--panel:#14161a;--accent:#6ae2ff;--accent2:#8b7cff;--danger:#ff6b6b}
     html,body{height:100%}
     body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial}
     .wrap{max-width:1100px;margin:0 auto;padding:24px}
@@ -21,15 +21,15 @@
     input[type=range]{width:100%}
     button{background:#0f1218;border:1px solid rgba(255,255,255,.12);color:var(--ink);border-radius:999px;padding:8px 14px;cursor:pointer}
     .pill{display:inline-block;padding:2px 8px;border-radius:999px;background:#0f1218;border:1px solid rgba(255,255,255,.12);font-size:12px;color:var(--muted)}
-    svg{display:block;width:100%;height:380px}
-    .axis text{font-size:12px;fill:var(--muted)}
-    .axis line{stroke:#2a2e36}
+    canvas{display:block;width:100%;height:260px;border-radius:10px;background:linear-gradient(#0f1218,#0f1218) padding-box,linear-gradient(180deg,rgba(255,255,255,.08),rgba(255,255,255,.06)) border-box;border:1px solid rgba(255,255,255,.08)}
+    .legend{display:flex;gap:14px;align-items:center;margin-top:8px}
+    .dot{width:10px;height:10px;border-radius:50%}
   </style>
 </head>
 <body>
   <div class="wrap">
-    <div class="h1">Interactive PitchTier (synced to audio)</div>
-    <p class="muted" style="margin-top:0">Pure <b>vanilla JS + SVG</b> (no CDN). Files must be at repo root: <code>pitch.PitchTier</code>, <code>voice.mp3</code>, <code>humming.mp3</code>. Play either audio; the <span style="color:var(--danger)">red bar</span> tracks time. Override names with <code>?pitch=…&voice=…&hum=…</code>.</p><div class="grid" style="margin-top:16px">
+    <div class="h1">Interactive waveform (synced to audio)</div>
+    <p class="muted" style="margin-top:0">No dependencies. Files must be at repo root: <code>voice.mp3</code> & <code>humming.mp3</code>. Play either audio; the <span style="color:var(--danger)">red bar</span> tracks time. You can override names with <code>?voice=…&hum=…</code>.</p><div class="grid" style="margin-top:16px">
   <div class="card">
     <div class="row" style="gap:16px;align-items:center">
       <button id="btnReset">⏮️ Reset</button>
@@ -40,14 +40,18 @@
       <span class="pill" id="timepill">-- / -- s</span>
     </div>
     <div class="row" style="gap:16px;margin-top:10px">
-      <label>Cursor offset (s)
-        <input id="offset" type="number" step="0.05" value="0" />
+      <label>Cursor offset (ms)
+        <input id="offset" type="number" step="5" value="0" />
       </label>
       <div class="grow"></div>
       <label class="muted">Seek</label>
       <input id="seek" type="range" min="0" max="0" step="0.01" value="0" />
     </div>
-    <p id="status" class="muted" style="margin:10px 0 0"></p>
+    <div class="legend">
+      <span class="dot" style="background:var(--accent)"></span><span class="muted">Voice</span>
+      <span class="dot" style="background:var(--accent2)"></span><span class="muted">Humming</span>
+      <span class="dot" style="background:var(--danger)"></span><span class="muted">Playhead</span>
+    </div>
   </div>
 
   <div class="card">
@@ -65,93 +69,115 @@
 </div>
 
 <div class="card" style="margin-top:16px">
-  <svg id="chart" viewBox="0 0 1000 400" preserveAspectRatio="none">
-    <g id="axes" class="axis"></g>
-    <path id="f0path" d="" fill="none" stroke="var(--accent)" stroke-width="2" />
-    <line id="cursor" x1="0" y1="0" x2="0" y2="400" stroke="var(--danger)" stroke-width="2"/>
-  </svg>
+  <canvas id="wave"></canvas>
 </div>
 
-<p class="muted" style="margin-top:12px">Tip: use <b>Ctrl/Cmd+Shift+R</b> to bypass cache after updates.</p>
+<p class="muted" style="margin-top:12px">Tip: use <b>Ctrl/Cmd+Shift+R</b> to bypass cache after updates. If your files differ slightly in length, use the offset to micro‑sync.</p>
 
   </div>  <script>
+  // ---------- helpers ----------
   const $ = (id)=>document.getElementById(id);
   const qp = (k, def)=>{ const v=new URLSearchParams(location.search).get(k); return (v&&v.trim())||def; };
 
-  function parsePitchTier(text){
-    const f = s => s ? parseFloat(s) : NaN;
-    const xmin = (text.match(/xmin\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)/)||[])[1];
-    const xmax = (text.match(/xmax\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)/)||[])[1];
-    const times = [...text.matchAll(/\bnumber\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)/g)].map(m=>f(m[1]));
-    const vals  = [...text.matchAll(/\bvalue\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)/g)].map(m=>f(m[1]));
-    const pts=[]; const n=Math.min(times.length, vals.length);
-    for(let i=0;i<n;i++){ const t=times[i], v=vals[i]; if(Number.isFinite(t)&&Number.isFinite(v)) pts.push({t, f0:v}); }
-    pts.sort((a,b)=>a.t-b.t);
-    return { pts, xmin: xmin?+xmin: (pts[0]?.t ?? 0), xmax: xmax?+xmax: (pts.at(-1)?.t ?? 1) };
+  // Downsampled min/max waveform for efficiency
+  function buildWaveform(channelData, width){
+    const N = channelData.length;
+    const step = Math.ceil(N / width);
+    const peaks = new Float32Array(width*2); // [min,max] pairs
+    for(let i=0;i<width;i++){
+      const start = i*step;
+      const end = Math.min(start+step, N);
+      let min=1e9, max=-1e9;
+      for(let j=start;j<end;j++){ const s=channelData[j]; if(s<min)min=s; if(s>max)max=s; }
+      peaks[i*2] = isFinite(min)?min:0; peaks[i*2+1]=isFinite(max)?max:0;
+    }
+    return peaks;
+  }
+
+  function drawWave(ctx, peaks, color, W, H){
+    const mid = H/2; ctx.lineWidth = 1; ctx.strokeStyle = color; ctx.beginPath();
+    for(let x=0;x<peaks.length/2;x++){
+      const min = peaks[x*2], max = peaks[x*2+1];
+      const y1 = mid + min*mid; const y2 = mid + max*mid;
+      ctx.moveTo(x+0.5, y1); ctx.lineTo(x+0.5, y2);
+    }
+    ctx.stroke();
   }
 
   (async function main(){
-    const pitchPath = qp('pitch','pitch.PitchTier');
     const voicePath = qp('voice','voice.mp3');
     const humPath   = qp('hum','humming.mp3');
-
     $('vpath').textContent = voicePath; $('hpath').textContent = humPath;
     $('voice').src = voicePath; $('hum').src = humPath;
 
-    const statusEl = $('status');
+    const canvas = $('wave');
+    const ctx = canvas.getContext('2d');
 
-    let pts=[], xmin=0, xmax=1;
-    try{
-      statusEl.textContent = 'Loading PitchTier…';
-      const txt = await fetch(pitchPath,{cache:'no-store'}).then(r=>{ if(!r.ok) throw new Error('not found: '+pitchPath); return r.text();});
-      ({pts, xmin, xmax} = parsePitchTier(txt));
-      statusEl.textContent = `Loaded ${pts.length} points • ${xmin.toFixed(2)}–${xmax.toFixed(2)} s`;
-    }catch(e){
-      statusEl.textContent = 'Error loading PitchTier: '+e.message;
+    function resize(){ const dpr = Math.max(1, window.devicePixelRatio||1); const cssW = canvas.clientWidth||1000; const cssH = canvas.clientHeight||260; canvas.width = Math.floor(cssW*dpr); canvas.height = Math.floor(cssH*dpr); ctx.setTransform(dpr,0,0,dpr,0,0); render(); }
+    window.addEventListener('resize', resize);
+
+    let vBuf=null, hBuf=null, vPeaks=null, hPeaks=null, duration=0;
+
+    async function decode(url){
+      const ac = new (window.AudioContext||window.webkitAudioContext)();
+      const ab = await fetch(url, {cache:'no-store'}).then(r=>r.arrayBuffer());
+      const buf = await ac.decodeAudioData(ab);
+      ac.close();
+      return buf;
     }
 
-    const svg = $('chart');
-    const axes = $('axes');
-    const path = $('f0path');
-    const vb = svg.viewBox.baseVal;
-    const W=vb.width,H=vb.height, padL=60,padR=20,padT=20,padB=30; const IW=W-padL-padR, IH=H-padT-padB;
+    function preparePeaks(){
+      const W = Math.max(600, canvas.clientWidth||1000); // pixel width to sample
+      if(vBuf && (!vPeaks || vPeaks.length/2!==W)) vPeaks = buildWaveform(vBuf.getChannelData(0), W);
+      if(hBuf && (!hPeaks || hPeaks.length/2!==W)) hPeaks = buildWaveform(hBuf.getChannelData(0), W);
+    }
 
-    const ys = pts.map(p=>p.f0); const minY=Math.min(...ys), maxY=Math.max(...ys); const ypad=(maxY-minY)*0.1||10; const y0=Math.max(0,minY-ypad), y1=maxY+ypad;
+    function render(){
+      const W = canvas.width; const H = canvas.height; // already in device pixels but ctx is scaled back
+      ctx.clearRect(0,0,W,H);
+      ctx.fillStyle = '#0f1218'; ctx.fillRect(0,0,W,H);
+      // center line
+      ctx.strokeStyle = 'rgba(255,255,255,.08)'; ctx.beginPath(); ctx.moveTo(0,H/2); ctx.lineTo(W,H/2); ctx.stroke();
+      // grid light
+      for(let i=1;i<6;i++){ const y = (H/2) + i*(H/12); ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke(); ctx.beginPath(); const y2=(H/2)-i*(H/12); ctx.moveTo(0,y2); ctx.lineTo(W,y2); ctx.stroke(); }
+      // waves
+      if(vPeaks) drawWave(ctx, vPeaks, 'rgba(106,226,255,0.95)', W, H);
+      if(hPeaks) drawWave(ctx, hPeaks, 'rgba(139,124,255,0.75)', W, H);
+      // cursor
+      const offMs = parseFloat($('offset').value||'0')||0;
+      const master = (!voice.paused? voice : hum);
+      const t = (master.currentTime*1000 + offMs)/1000; // seconds
+      const dur = duration || master.duration || 1;
+      const x = Math.max(0, Math.min(W-1, Math.round((t/dur) * (W-1))));
+      ctx.strokeStyle = 'rgba(255,107,107,1)'; ctx.beginPath(); ctx.moveTo(x+0.5,0); ctx.lineTo(x+0.5,H); ctx.stroke();
+    }
 
-    let scaleX = (t)=> padL + ((t-xmin)/(xmax-xmin))*IW;
-    let scaleY = (y)=> padT + (1-((y-y0)/(y1-y0)))*IH;
+    // Load & draw
+    try{ vBuf = await decode(voicePath); }catch(e){ console.warn('voice decode error', e); }
+    try{ hBuf = await decode(humPath); }catch(e){ console.warn('hum decode error', e); }
+    duration = Math.max(vBuf?.duration||0, hBuf?.duration||0);
+    resize(); preparePeaks(); render();
 
-    function line(x1,y1,x2,y2){ const el=document.createElementNS('http://www.w3.org/2000/svg','line'); el.setAttribute('x1',x1);el.setAttribute('y1',y1);el.setAttribute('x2',x2);el.setAttribute('y2',y2);el.setAttribute('stroke','#2a2e36'); return el; }
-    axes.appendChild(line(padL,H-padB,W-padR,H-padB));
-    axes.appendChild(line(padL,padT,padL,H-padB));
-    const xt=10, yt=6;
-    for(let i=0;i<=xt;i++){ const t = xmin + (i/xt)*(xmax-xmin); const x = scaleX(t); axes.appendChild(line(x,H-padB,x,H-padB+6)); const tx=document.createElementNS('http://www.w3.org/2000/svg','text'); tx.setAttribute('x',x); tx.setAttribute('y',H-8); tx.setAttribute('text-anchor','middle'); tx.setAttribute('fill','var(--muted)'); tx.textContent = t.toFixed(1)+'s'; axes.appendChild(tx);}    
-    for(let i=0;i<=yt;i++){ const vy = y0 + (i/yt)*(y1-y0); const y=scaleY(vy); axes.appendChild(line(padL-6,y,padL,y)); const ty=document.createElementNS('http://www.w3.org/2000/svg','text'); ty.setAttribute('x',8); ty.setAttribute('y',y+4); ty.setAttribute('fill','var(--muted)'); ty.textContent = Math.round(vy); axes.appendChild(ty);}    
+    // ----- players & sync -----
+    const voice=$('voice'), hum=$('hum'), seek=$('seek'), pill=$('timepill');
+    function updatePill(){ const m = (!voice.paused? voice : hum); pill.textContent = `${(m.currentTime||0).toFixed(2)} / ${(m.duration||duration||0).toFixed(2)} s`; }
+    function setAll(sec){ voice.currentTime=sec; hum.currentTime=sec; seek.value=String(sec); render(); updatePill(); }
 
-    const d = pts.map((p,i)=> (i?'L':'M')+scaleX(p.t)+' '+scaleY(p.f0)).join(' ');
-    path.setAttribute('d', d);
+    voice.addEventListener('loadedmetadata',()=>{ seek.max=String(voice.duration||duration||0); updatePill(); });
+    hum.addEventListener('loadedmetadata',()=>{ if(!(+seek.max)) seek.max=String(hum.duration||duration||0); updatePill(); });
 
-    const cursor = $('cursor'); cursor.setAttribute('y1', padT); cursor.setAttribute('y2', H-padB);
+    voice.addEventListener('timeupdate',()=>{ if(!voice.paused){ hum.currentTime=voice.currentTime; seek.value=String(voice.currentTime); updatePill(); } render(); });
+    hum.addEventListener('timeupdate',()=>{ if(!hum.paused){ voice.currentTime=hum.currentTime; seek.value=String(hum.currentTime); updatePill(); } render(); });
 
-    const v=$('voice'), h=$('hum'), seek=$('seek'), pill=$('timepill'), offEl=$('offset');
-    function updatePill(){ pill.textContent = `${isFinite(v.currentTime)?v.currentTime.toFixed(2):'--'} / ${isFinite(v.duration)?v.duration.toFixed(2):'--'} s`; }
-    function setAllTime(sec){ if(isFinite(sec)){ v.currentTime=sec; h.currentTime=sec; seek.value=String(sec); updateCursor(); updatePill(); } }
-    function updateCursor(){ const off=parseFloat(offEl.value||'0')||0; const master = (!v.paused?v:h); const t = (master.currentTime||0)+off; const x = scaleX(Math.min(Math.max(xmin,t),xmax)); cursor.setAttribute('x1',x); cursor.setAttribute('x2',x); }
+    $('btnPlayVoice').onclick=()=>{ voice.play(); hum.play(); };
+    $('btnPlayHum').onclick=()=>{ hum.play(); voice.play(); };
+    $('btnPause').onclick=()=>{ voice.pause(); hum.pause(); };
+    $('btnReset').onclick=()=> setAll(0);
+    seek.oninput=(e)=> setAll(parseFloat(e.target.value));
+    $('offset').oninput=render;
 
-    v.addEventListener('loadedmetadata',()=>{ seek.max=String(v.duration||0); updatePill(); });
-    h.addEventListener('loadedmetadata',()=>{ if(!+seek.max) seek.max=String(h.duration||0); updatePill(); });
-
-    v.addEventListener('timeupdate',()=>{ if(!v.paused){ h.currentTime=v.currentTime; seek.value=String(v.currentTime); updateCursor(); updatePill(); }});
-    h.addEventListener('timeupdate',()=>{ if(!h.paused){ v.currentTime=h.currentTime; seek.value=String(h.currentTime); updateCursor(); updatePill(); }});
-
-    $('btnPlayVoice').onclick=()=>{ v.play(); h.play(); };
-    $('btnPlayHum').onclick=()=>{ h.play(); v.play(); };
-    $('btnPause').onclick=()=>{ v.pause(); h.pause(); };
-    $('btnReset').onclick=()=> setAllTime(0);
-    seek.oninput=(e)=> setAllTime(parseFloat(e.target.value));
-    offEl.oninput=updateCursor;
-
-    (function raf(){ updateCursor(); requestAnimationFrame(raf); })();
+    // keep cursor smooth
+    (function raf(){ render(); requestAnimationFrame(raf); })();
   })();
   </script></body>
 </html>
