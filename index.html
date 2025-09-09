@@ -1,101 +1,212 @@
-<script src="./wavesurfer.min.js"></script>
-<script>
-(function(){
-  const qp=(k,d)=>new URLSearchParams(location.search).get(k)||d;
-  const src=qp('voice','voice.mp3');
-  const featPath=qp('feat','features.json');
-  const pitchPath=qp('pitch','pitch.PitchTier');
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Prosody Player</title>
+  <style>
+    :root{--bg:#0b0c0f;--ink:#e7e9ee;--muted:#9aa3b2;--panel:#14161a;--accent:#4be4ff;--rms:#a6ff6a;--cursor:#ff6b6b}
+    html,body{height:100%}
+    body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial}
+    .wrap{max-width:1100px;margin:0 auto;padding:24px}
+    .card{position:relative;background:var(--panel);border:1px solid rgba(255,255,255,.08);border-radius:16px;box-shadow:0 12px 28px rgba(0,0,0,.25);overflow:hidden}
+    .controls{display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid rgba(255,255,255,.06)}
+    .btn{background:#0f1218;border:1px solid rgba(255,255,255,.12);color:var(--ink);border-radius:999px;padding:8px 14px;cursor:pointer}
+    .pill{margin-left:auto;display:inline-block;padding:2px 8px;border-radius:999px;background:#0f1218;border:1px solid rgba(255,255,255,.12);font-size:12px;color:var(--muted)}
+    #overview{height:72px}
+    #detail{height:180px;border-top:1px solid rgba(255,255,255,.06)}
+    #pitch{display:block;width:100%;height:160px;border-top:1px solid rgba(255,255,255,.06)}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <div class="controls">
+        <button class="btn" id="play">▶️</button>
+        <button class="btn" id="pause">⏸️</button>
+        <button class="btn" id="zoomOut">➖</button>
+        <button class="btn" id="zoomIn">➕</button>
+        <span class="pill" id="time">-- / --</span>
+      </div>
+      <div id="overview"></div>
+      <div id="detail"></div>
+      <canvas id="pitch"></canvas>
+    </div>
+  </div>
 
-  // wavesurfer (overview + detail)
-  const wsOverview=WaveSurfer.create({container:'#overview',height:72,waveColor:'#24313b',progressColor:'#435564',
-    cursorColor:'transparent',barWidth:1,barGap:0,normalize:true,interact:true,dragToSeek:true,responsive:true});
-  let pxPerSec=160;
-  const wsDetail=WaveSurfer.create({container:'#detail',height:180,waveColor:'#2b97ad',progressColor:'#6ae2ff',cursorColor:'#6ae2ff',
-    barWidth:2,barGap:1,minPxPerSec:pxPerSec,autoCenter:true,hideScrollbar:false,dragToSeek:true,normalize:true,responsive:true});
-  wsOverview.load(src); wsDetail.load(src);
+  <script src="./wavesurfer.min.js"></script>
+  <script>
+  (function(){
+    const qp=(k,d)=>new URLSearchParams(location.search).get(k)||d;
+    const src=qp('voice','voice.mp3');
+    const featPath=qp('feat','features.json');     // optional precomputed features
+    const pitchPath=qp('pitch','pitch.PitchTier'); // optional Praat PitchTier
 
-  // controls
-  const timePill=document.getElementById('time');
-  document.getElementById('zoomIn').onclick = ()=>{ pxPerSec=Math.min(800,pxPerSec*1.25); wsDetail.setOptions({minPxPerSec:pxPerSec}); drawPitch(); };
-  document.getElementById('zoomOut').onclick= ()=>{ pxPerSec=Math.max(40, pxPerSec/1.25); wsDetail.setOptions({minPxPerSec:pxPerSec}); drawPitch(); };
-  document.getElementById('play').onclick   = ()=> wsDetail.play();
-  document.getElementById('pause').onclick  = ()=> wsDetail.pause();
-  function syncOverview(){ const t=wsDetail.getCurrentTime()||0, d=wsDetail.getDuration()||1; if(wsOverview.setTime) wsOverview.setTime(t); else wsOverview.seekTo(t/d); }
-  wsDetail.on('timeupdate',()=>{ syncOverview(); const t=wsDetail.getCurrentTime()||0, d=wsDetail.getDuration()||0; timePill.textContent=`${t.toFixed(2)} / ${d.toFixed(2)} s`; drawPitch(); });
-  wsDetail.on('seek',()=>{ syncOverview(); drawPitch(); });
-  wsOverview.on('seek',rel=> wsDetail.seekTo(rel));
-  wsDetail.on('redraw',()=>{ resizePitch(); drawPitch(); });
-  window.addEventListener('resize',()=>{ resizePitch(); drawPitch(); });
+    // wavesurfer (overview + detail)
+    const wsOverview=WaveSurfer.create({
+      container:'#overview',height:72,waveColor:'#24313b',progressColor:'#435564',
+      cursorColor:'transparent',barWidth:1,barGap:0,normalize:true,interact:true,dragToSeek:true,responsive:true
+    });
+    let pxPerSec=160;
+    const wsDetail=WaveSurfer.create({
+      container:'#detail',height:180,waveColor:'#2b97ad',progressColor:'#6ae2ff',cursorColor:'#6ae2ff',
+      barWidth:2,barGap:1,minPxPerSec:pxPerSec,autoCenter:true,hideScrollbar:false,dragToSeek:true,normalize:true,responsive:true
+    });
+    wsOverview.load(src); wsDetail.load(src);
 
-  // overlay canvas (F0 left axis + RMS right axis)
-  const pitchCanvas=document.getElementById('pitch'), pctx=pitchCanvas.getContext('2d');
-  const cssVar=(name,fallback)=>getComputedStyle(document.documentElement).getPropertyValue(name).trim()||fallback;
-  function resizePitch(){ const dpr=Math.max(1,devicePixelRatio||1);
-    const rect=wsDetail.getWrapper().getBoundingClientRect();
-    pitchCanvas.width=Math.max(1,Math.floor(rect.width*dpr)); const cssH=160; pitchCanvas.height=Math.floor(cssH*dpr);
-    pitchCanvas.style.width=rect.width+'px'; pitchCanvas.style.height=cssH+'px'; pctx.setTransform(dpr,0,0,dpr,0,0); }
-  resizePitch();
+    // controls
+    const timePill=document.getElementById('time');
+    document.getElementById('zoomIn').onclick = ()=>{ pxPerSec=Math.min(800,pxPerSec*1.25); wsDetail.setOptions({minPxPerSec:pxPerSec}); drawPitch(); };
+    document.getElementById('zoomOut').onclick= ()=>{ pxPerSec=Math.max(40, pxPerSec/1.25); wsDetail.setOptions({minPxPerSec:pxPerSec}); drawPitch(); };
+    document.getElementById('play').onclick   = ()=> wsDetail.play();
+    document.getElementById('pause').onclick  = ()=> wsDetail.pause();
+    function syncOverview(){ const t=wsDetail.getCurrentTime()||0, d=wsDetail.getDuration()||1; if(wsOverview.setTime) wsOverview.setTime(t); else wsOverview.seekTo(t/d); }
+    wsDetail.on('timeupdate',()=>{ syncOverview(); const t=wsDetail.getCurrentTime()||0, d=wsDetail.getDuration()||0; timePill.textContent=`${t.toFixed(2)} / ${d.toFixed(2)} s`; drawPitch(); });
+    wsDetail.on('seek',()=>{ syncOverview(); drawPitch(); });
+    wsOverview.on('seek',rel=> wsDetail.seekTo(rel));
+    wsDetail.on('redraw',()=>{ resizePitch(); drawPitch(); });
+    window.addEventListener('resize',()=>{ resizePitch(); drawPitch(); });
 
-  let f0pts=null, rmsPts=null, rmsMax=1;
+    // overlay canvas (F0 left axis + RMS right axis)
+    const pitchCanvas=document.getElementById('pitch'), pctx=pitchCanvas.getContext('2d');
+    const cssVar=(name,fallback)=>getComputedStyle(document.documentElement).getPropertyValue(name).trim()||fallback;
+    function resizePitch(){ const dpr=Math.max(1,devicePixelRatio||1);
+      const rect=wsDetail.getWrapper().getBoundingClientRect();
+      pitchCanvas.width=Math.max(1,Math.floor(rect.width*dpr)); const cssH=160; pitchCanvas.height=Math.floor(cssH*dpr);
+      pitchCanvas.style.width=rect.width+'px'; pitchCanvas.style.height=cssH+'px'; pctx.setTransform(dpr,0,0,dpr,0,0); }
+    resizePitch();
 
-  async function tryLoadFeaturesJSON(){
-    try{ const r=await fetch(featPath,{cache:'no-store'}); if(!r.ok) return false;
-      const data=await r.json();
-      const f0=(data.f0||data.points||[]).map(v=>Array.isArray(v)?{t:+v[0],f0:+v[1]}:({t:+v.t,f0:+v.f0}));
-      const rms=(data.rms||[]).map(v=>Array.isArray(v)?{t:+v[0],r:+v[1]}:({t:+v.t,r:+v.r}));
-      if(f0.length) f0pts=f0; if(rms.length) { rmsPts=rms; rmsMax=Math.max(1, ...rms.map(p=>p.r)); }
-      if(f0.length||rms.length){ drawPitch(); return true; } return false;
-    }catch{ return false; }
-  }
-  function parsePitchTier(text){
-    const f=s=>s?parseFloat(s):NaN;
-    const ts=[...text.matchAll(/\\bnumber\\s*=\\s*([-+]?\\d*\\.?\\d+(?:[eE][-+]?\\d+)?)/g)].map(m=>f(m[1]));
-    const vs=[...text.matchAll(/\\bvalue\\s*=\\s*([-+]?\\d*\\.?\\d+(?:[eE][-+]?\\d+)?)/g)].map(m=>f(m[1]));
-    const out=[]; for(let i=0;i<Math.min(ts.length,vs.length);i++){ const t=ts[i], v=vs[i]; if(Number.isFinite(t)&&Number.isFinite(v)) out.push({t,f0:v}); }
-    return out.sort((a,b)=>a.t-b.t);
-  }
-  async function tryLoadPitchTier(){
-    try{ const r=await fetch(pitchPath,{cache:'no-store'}); if(!r.ok) return false;
-      const txt=await r.text(); const arr=parsePitchTier(txt); if(!arr.length) return false; f0pts=arr; drawPitch(); return true;
-    }catch{ return false; }
-  }
+    let f0pts=null, rmsPts=null, rmsMax=1;
 
-  // fallback (only if both files missing): compute quickly
-  async function computeFeatures(){ /* unchanged from before; safe to leave out if you precompute */ }
+    // --- Try precomputed JSON features first ---
+    async function tryLoadFeaturesJSON(){
+      try{
+        const r=await fetch(featPath,{cache:'no-store'}); if(!r.ok) return false;
+        const data=await r.json();
+        const f0=(data.f0||data.points||[]).map(v=>Array.isArray(v)?{t:+v[0],f0:+v[1]}:({t:+v.t,f0:+v.f0}));
+        const rms=(data.rms||[]).map(v=>Array.isArray(v)?{t:+v[0],r:+v[1]}:({t:+v.t,r:+v.r}));
+        if(f0.length) f0pts=f0;
+        if(rms.length){ rmsPts=rms; rmsMax=Math.max(1, ...rms.map(p=>p.r)); }
+        if(f0.length||rms.length){ drawPitch(); return true; }
+        return false;
+      }catch{ return false; }
+    }
 
-  (async()=>{
-    if(await tryLoadFeaturesJSON()) return;
-    if(await tryLoadPitchTier())   return;
-    // fallback: compute on first play/ready
-    let armed=false; const arm=()=>{ if(!armed){ armed=true; computeFeatures(); } };
-    wsDetail.on('ready',arm); wsDetail.on('play',arm);
-    document.getElementById('play').addEventListener('click',arm);
-    document.documentElement.addEventListener('touchend',arm,{once:true});
-    setTimeout(arm,1200);
+    // --- Else try a Praat PitchTier (text) ---
+    function parsePitchTier(text){
+      const f=s=>s?parseFloat(s):NaN;
+      const ts=[...text.matchAll(/\bnumber\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)/g)].map(m=>f(m[1]));
+      const vs=[...text.matchAll(/\bvalue\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)/g)].map(m=>f(m[1]));
+      const out=[]; for(let i=0;i<Math.min(ts.length,vs.length);i++){ const t=ts[i], v=vs[i]; if(Number.isFinite(t)&&Number.isFinite(v)) out.push({t,f0:v}); }
+      return out.sort((a,b)=>a.t-b.t);
+    }
+    async function tryLoadPitchTier(){
+      try{
+        const r=await fetch(pitchPath,{cache:'no-store'}); if(!r.ok) return false;
+        const txt=await r.text(); const arr=parsePitchTier(txt); if(!arr.length) return false;
+        f0pts=arr; drawPitch(); return true;
+      }catch{ return false; }
+    }
+
+    // --- Fallback: compute features client-side (YIN @ 6 kHz) ---
+    async function computeFeatures(){
+      try{
+        const ac=new (window.AudioContext||window.webkitAudioContext)();
+        if(ac.state==='suspended'){ try{ await ac.resume(); }catch{} }
+        const ab=await fetch(src,{cache:'no-store'}).then(r=>r.arrayBuffer());
+        const buf=await ac.decodeAudioData(ab);
+
+        // downsample to ~6 kHz
+        const target=6000, sr0=buf.sampleRate, factor=Math.max(1,Math.floor(sr0/target));
+        const sr=sr0/factor, ch=buf.getChannelData(0), N=Math.floor(ch.length/factor);
+        const s=new Float32Array(N); for(let j=0,i=0;j<N;j++,i+=factor) s[j]=ch[i];
+
+        const frame=480, hop=60;                 // 80 ms / 10 ms @ 6 kHz
+        const minF=(qp('fmin',60)|0)||60, maxF=(qp('fmax',400)|0)||400;
+        const tauMin=Math.max(2, Math.floor(sr/maxF));
+        const tauMax=Math.max(tauMin+2, Math.floor(sr/minF));
+        const win=new Float32Array(frame); for(let i=0;i<frame;i++) win[i]=0.5*(1-Math.cos(2*Math.PI*i/(frame-1)));
+
+        const f0=[], rms=[]; let localMaxRMS=0;
+
+        function yin(frameArr){
+          const W=frameArr.length;
+          const d=new Float32Array(tauMax+1);
+          for(let tau=tauMin; tau<=tauMax; tau++){
+            let sum=0; for(let j=0;j+tau<W;j++){ const diff=frameArr[j]-frameArr[j+tau]; sum += diff*diff; }
+            d[tau]=sum;
+          }
+          const cmnd=new Float32Array(tauMax+1);
+          let run=0; for(let tau=tauMin; tau<=tauMax; tau++){ run += d[tau]; cmnd[tau] = d[tau] * tau / (run || 1e-12); }
+          const thresh=0.25; // generous
+          let tau=-1;
+          for(let t=tauMin+1; t<=tauMax; t++){
+            if(cmnd[t] < thresh){ while(t+1<=tauMax && cmnd[t+1] < cmnd[t]) t++; tau=t; break; }
+          }
+          if(tau<0) return 0;
+          let better=tau;
+          if(tau>tauMin && tau<tauMax){
+            const x0=cmnd[tau-1], x1=cmnd[tau], x2=cmnd[tau+1];
+            const denom=(x0-2*x1+x2)||1e-12; const delta=0.5*(x0-x2)/denom; better=tau+delta;
+          }
+          return sr / better;
+        }
+
+        for(let idx=0,i=0; i+frame<=s.length; i+=hop, idx++){
+          const a=new Float32Array(frame); let e=0; for(let j=0;j<frame;j++){ const v=s[i+j]*win[j]; a[j]=v; e+=v*v; }
+          const r=Math.sqrt(e/frame); rms.push({t:i/sr, r}); if(r>localMaxRMS) localMaxRMS=r;
+          const f = yin(a); f0.push({t:i/sr, f0:f});
+          if((idx%16)===0){ f0pts=f0.slice(); rmsPts=rms.slice(); rmsMax=localMaxRMS||1; drawPitch(); await new Promise(requestAnimationFrame); }
+        }
+        for(let k=1;k<f0.length-1;k++){ f0[k].f0 = f0[k-1].f0*0.25 + f0[k].f0*0.5 + f0[k+1].f0*0.25; }
+        for(let k=1;k<rms.length-1;k++){ rms[k].r  = rms[k-1].r *0.25 + rms[k].r *0.5 + rms[k+1].r *0.25; }
+        f0pts=f0; rmsPts=rms; rmsMax=localMaxRMS||1; drawPitch();
+      }catch(e){ /* keep waveform working even if features fail */ }
+    }
+
+    (async()=>{
+      if(await tryLoadFeaturesJSON()) return;
+      if(await tryLoadPitchTier())   return;
+      // fallback: compute on first play/ready
+      let armed=false; const arm=()=>{ if(!armed){ armed=true; computeFeatures(); } };
+      wsDetail.on('ready',arm); wsDetail.on('play',arm);
+      document.getElementById('play').addEventListener('click',arm);
+      document.documentElement.addEventListener('touchend',arm,{once:true});
+      setTimeout(arm,1200);
+    })();
+
+    function drawPitch(){
+      const W=pitchCanvas.width, H=pitchCanvas.height; if(!W||!H) return; pctx.clearRect(0,0,W,H);
+      // grid
+      pctx.strokeStyle='rgba(255,255,255,.06)'; for(let i=1;i<=3;i++){ const y=(H*i/4); pctx.beginPath(); pctx.moveTo(0,y+0.5); pctx.lineTo(W,y+0.5); pctx.stroke(); }
+      const dur=wsDetail.getDuration()||1, widthPx=pitchCanvas.clientWidth||W, secondsVisible=widthPx/pxPerSec;
+      const cur=wsDetail.getCurrentTime()||0, start=Math.max(0, Math.min(cur - secondsVisible/2, Math.max(0,dur-secondsVisible)));
+
+      // F0 (left axis 60–400 Hz by default)
+      if(f0pts && f0pts.length){
+        const fmin=(qp('fmin',60)|0)||60, fmax=(qp('fmax',400)|0)||400;
+        pctx.strokeStyle=cssVar('--accent','#4be4ff'); pctx.lineWidth=3; pctx.beginPath(); let on=false;
+        for(const p of f0pts){
+          if(p.t<start||p.t>start+secondsVisible||p.f0<=0){ on=false; continue; }
+          const x=(p.t-start)*pxPerSec; const ratio=Math.max(0,Math.min(1,(p.f0-fmin)/(fmax-fmin))); const y=H - ratio*H;
+          if(!on){ pctx.moveTo(x,y); on=true; } else { pctx.lineTo(x,y); }
+        }
+        pctx.stroke();
+      }
+      // RMS (right axis 0–1)
+      if(rmsPts && rmsPts.length){
+        pctx.strokeStyle=cssVar('--rms','#a6ff6a'); pctx.lineWidth=1.5; pctx.beginPath(); let on=false; const maxV=rmsMax||1;
+        for(const p of rmsPts){
+          if(p.t<start||p.t>start+secondsVisible){ on=false; continue; }
+          const x=(p.t-start)*pxPerSec; const y=H - Math.min(1,(p.r/maxV))*H;
+          if(!on){ pctx.moveTo(x,y); on=true; } else { pctx.lineTo(x,y); }
+        }
+        pctx.stroke();
+      }
+      // playhead
+      const x=(secondsVisible/2)*pxPerSec; pctx.strokeStyle=cssVar('--cursor','#ff6b6b'); pctx.lineWidth=2; pctx.beginPath(); pctx.moveTo(x+0.5,0); pctx.lineTo(x+0.5,H); pctx.stroke();
+    }
   })();
-
-  function drawPitch(){
-    const W=pitchCanvas.width, H=pitchCanvas.height; if(!W||!H) return; pctx.clearRect(0,0,W,H);
-    pctx.strokeStyle='rgba(255,255,255,.06)'; for(let i=1;i<=3;i++){ const y=(H*i/4); pctx.beginPath(); pctx.moveTo(0,y+0.5); pctx.lineTo(W,y+0.5); pctx.stroke(); }
-    const dur=wsDetail.getDuration()||1, widthPx=pitchCanvas.clientWidth||W, secondsVisible=widthPx/pxPerSec;
-    const cur=wsDetail.getCurrentTime()||0, start=Math.max(0, Math.min(cur - secondsVisible/2, Math.max(0,dur-secondsVisible)));
-
-    if(f0pts && f0pts.length){
-      const fmin=(qp('fmin',60)|0)||60, fmax=(qp('fmax',400)|0)||400;
-      pctx.strokeStyle=cssVar('--accent','#4be4ff'); pctx.lineWidth=3; pctx.beginPath(); let on=false;
-      for(const p of f0pts){ if(p.t<start||p.t>start+secondsVisible||p.f0<=0){ on=false; continue; }
-        const x=(p.t-start)*pxPerSec; const ratio=Math.max(0,Math.min(1,(p.f0-fmin)/(fmax-fmin))); const y=H - ratio*H;
-        if(!on){ pctx.moveTo(x,y); on=true; } else { pctx.lineTo(x,y); } }
-      pctx.stroke();
-    }
-    if(rmsPts && rmsPts.length){
-      pctx.strokeStyle=cssVar('--rms','#a6ff6a'); pctx.lineWidth=1.5; pctx.beginPath(); let on=false; const maxV=rmsMax||1;
-      for(const p of rmsPts){ if(p.t<start||p.t>start+secondsVisible){ on=false; continue; }
-        const x=(p.t-start)*pxPerSec; const y=H - Math.min(1,(p.r/maxV))*H;
-        if(!on){ pctx.moveTo(x,y); on=true; } else { pctx.lineTo(x,y); } }
-      pctx.stroke();
-    }
-    const x=(secondsVisible/2)*pxPerSec; pctx.strokeStyle=cssVar('--cursor','#ff6b6b'); pctx.lineWidth=2; pctx.beginPath(); pctx.moveTo(x+0.5,0); pctx.lineTo(x+0.5,H); pctx.stroke();
-  }
-})();
-</script>
+  </script>
+</body>
+</html>
