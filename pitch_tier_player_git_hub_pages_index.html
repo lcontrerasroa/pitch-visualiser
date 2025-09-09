@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Praat PitchTier Player (Voice ↔ Humming)</title>
+  <style>
+    :root { --bg:#0b0c0f; --card:#14161a; --ink:#e7e9ee; --muted:#9aa3b2; --accent:#6ae2ff; --danger:#ff5c5c; }
+    html,body{height:100%;}
+    body{margin:0;font:16px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial;color:var(--ink);background:var(--bg);} 
+    .wrap{max-width:1100px;margin:0 auto;padding:24px;}
+    .card{background:var(--card);border:1px solid rgba(255,255,255,.08);border-radius:16px;padding:16px 18px;box-shadow:0 10px 30px rgba(0,0,0,.2);}
+    .grid{display:grid;gap:16px}
+    @media(min-width:880px){.grid{grid-template-columns:1fr 1fr}}
+    label{font-size:13px;color:var(--muted)}
+    input[type=file], select, button, input[type=number], input[type=range]{background:#0e1014;color:var(--ink);border:1px solid rgba(255,255,255,.12);border-radius:10px;padding:8px 10px}
+    input[type=range]{width:100%}
+    button{cursor:pointer}
+    .row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+    .row > *{flex:0 0 auto}
+    .grow{flex:1 1 auto}
+    .muted{color:var(--muted)}
+    .pill{display:inline-block;padding:2px 8px;border-radius:999px;background:#0f1218;border:1px solid rgba(255,255,255,.1);font-size:12px}
+    .legend{display:flex;gap:10px;flex-wrap:wrap}
+    .legend span{display:inline-flex;align-items:center;gap:6px}
+    .dot{width:10px;height:10px;border-radius:50%}
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <!-- React + Recharts via CDN -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/recharts/umd/Recharts.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <script type="text/babel">
+    const { useEffect, useMemo, useRef, useState } = React;
+    const { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, Scatter, Brush } = Recharts;
+
+    function parsePitchTier(text){
+      const getF = s => s ? parseFloat(s) : NaN;
+      const xmin = (text.match(/xmin\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)/) || [])[1];
+      const xmax = (text.match(/xmax\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)/) || [])[1];
+      const times = [...text.matchAll(/\bnumber\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)/g)].map(m=>getF(m[1]));
+      const vals  = [...text.matchAll(/\bvalue\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)/g)].map(m=>getF(m[1]));
+      const pts=[]; const n=Math.min(times.length, vals.length);
+      for(let i=0;i<n;i++){ const t=times[i], f0=vals[i]; if(Number.isFinite(t)&&Number.isFinite(f0)) pts.push({t,f0}); }
+      pts.sort((a,b)=>a.t-b.t);
+      const _xmin = xmin? parseFloat(xmin) : (pts[0]?.t ?? 0);
+      const _xmax = xmax? parseFloat(xmax) : (pts[pts.length-1]?.t ?? 1);
+      return { pts, xmin:_xmin, xmax:_xmax };
+    }
+
+    function clamp(v,min,max){ return Math.max(min, Math.min(max, v)); }
+
+    function App(){
+      const [pitchPts,setPitchPts]=useState([]);
+      const [xmin,setXmin]=useState(null); const [xmax,setXmax]=useState(null);
+      const [ymin,setYmin]=useState(null); const [ymax,setYmax]=useState(null);
+      const [smooth,setSmooth]=useState(true);
+      const [offset,setOffset]=useState(0);
+      const voiceRef = useRef(null); const humRef = useRef(null);
+      const [voiceUrl,setVoiceUrl]=useState(null); const [humUrl,setHumUrl]=useState(null);
+      const [duration,setDuration]=useState(0); const [t,setT]=useState(0);
+      const [blend,setBlend]=useState(100); // 0 = only humming, 100 = only voice
+      const rafRef = useRef(null);
+
+      const onPitchFile = async (file)=>{
+        const text = await file.text();
+        const {pts, xmin, xmax} = parsePitchTier(text);
+        setPitchPts(pts); setXmin(xmin); setXmax(xmax);
+        if(pts.length){
+          const ys = pts.map(p=>p.f0); const minY = Math.min(...ys); const maxY = Math.max(...ys); const pad=(maxY-minY)*0.1||10;
+          setYmin(Math.max(0,minY-pad)); setYmax(maxY+pad);
+        }
+      }
+      const onVoice = (file)=>{ if(voiceUrl) URL.revokeObjectURL(voiceUrl); setVoiceUrl(URL.createObjectURL(file)); }
+      const onHum   = (file)=>{ if(humUrl) URL.revokeObjectURL(humUrl); setHumUrl(URL.createObjectURL(file)); }
+
+      // Sync loop
+      useEffect(()=>{
+        const v=voiceRef.current, h=humRef.current; if(!v && !h) return;
+        const tick = ()=>{
+          const master = v && !v.paused ? v : (h && !h.paused ? h : v || h);
+          if(master){ setT(master.currentTime); setDuration(master.duration||0); }
+          rafRef.current = requestAnimationFrame(tick);
+        }
+        rafRef.current = requestAnimationFrame(tick);
+        return ()=> cancelAnimationFrame(rafRef.current);
+      },[]);
+
+      // Keep players in sync when seeking or starting
+      function setTimeAll(sec){ const v=voiceRef.current, h=humRef.current; if(v) v.currentTime=sec; if(h) h.currentTime=sec; setT(sec); }
+      async function playAll(){ const v=voiceRef.current, h=humRef.current; try{ if(v){v.playbackRate=1; await v.play();} if(h){h.playbackRate=1; await h.play();} }catch(e){}
+      }
+      function pauseAll(){ const v=voiceRef.current, h=humRef.current; if(v) v.pause(); if(h) h.pause(); }
+
+      // Apply blend volumes
+      useEffect(()=>{ const v=voiceRef.current, h=humRef.current; const a=clamp(blend/100,0,1); if(v) v.volume=a; if(h) h.volume=1-a; },[blend, voiceRef.current, humRef.current]);
+
+      const data = useMemo(()=> pitchPts.map(p=>({time:p.t, f0:p.f0})), [pitchPts]);
+      const cursorX = t + offset;
+
+      return (
+        <div className="wrap">
+          <h1 style={{margin:"0 0 8px",fontWeight:650}}>Praat PitchTier Player — Voice ↔ Humming</h1>
+          <p className="muted" style={{marginTop:0}}>Upload a <span className="pill">.PitchTier</span> file and two audio files (voice + humming). They will play in perfect sync; use the blend slider to switch which one you hear. The red line tracks time over the F0 curve.</p>
+
+          <div className="grid" style={{marginTop:16}}>
+            <div className="card">
+              <div className="row" style={{marginBottom:10}}>
+                <div>
+                  <label>PitchTier (.PitchTier)</label><br/>
+                  <input type="file" accept=".PitchTier,.TextGrid,.txt,.text" onChange={e=>{const f=e.target.files?.[0]; if(f) onPitchFile(f)}} />
+                </div>
+                <div>
+                  <label>Voice audio (mp3/wav)</label><br/>
+                  <input type="file" accept="audio/*" onChange={e=>{const f=e.target.files?.[0]; if(f) onVoice(f)}} />
+                </div>
+                <div>
+                  <label>Humming audio (mp3/wav)</label><br/>
+                  <input type="file" accept="audio/*" onChange={e=>{const f=e.target.files?.[0]; if(f) onHum(f)}} />
+                </div>
+              </div>
+
+              <div className="row" style={{alignItems:"center",gap:16}}>
+                <button onClick={()=>setTimeAll(0)}>⏮️ Reset</button>
+                <button onClick={playAll}>▶️ Play (sync)</button>
+                <button onClick={pauseAll}>⏸️ Pause</button>
+                <div className="grow" />
+                <label>Blend (0 = humming · 100 = voice)</label>
+                <input className="grow" type="range" min="0" max="100" value={blend} onChange={e=>setBlend(parseInt(e.target.value))} />
+                <span className="pill">{blend}% voice</span>
+              </div>
+
+              <div className="row" style={{marginTop:10, gap:10}}>
+                <label>Seek:</label>
+                <input className="grow" type="range" min="0" step="0.01" max={duration||0} value={t} onChange={e=>setTimeAll(parseFloat(e.target.value))} />
+                <span className="pill">{isFinite(t)?t.toFixed(2):"--"} / {isFinite(duration)?duration.toFixed(2):"--"} s</span>
+              </div>
+
+              <div className="row" style={{marginTop:10,gap:16}}>
+                <label>Cursor offset (s)</label>
+                <input type="number" step="0.05" value={offset} onChange={e=>setOffset(parseFloat(e.target.value)||0)} />
+                <label>Smoothing</label>
+                <input type="checkbox" checked={smooth} onChange={e=>setSmooth(e.target.checked)} />
+                <div className="grow"></div>
+                <div className="legend">
+                  <span><span className="dot" style={{background:'#e7e9ee'}}></span>F0</span>
+                  <span><span className="dot" style={{background:'var(--danger)'}}></span>Cursor</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="card">
+              <div className="row" style={{gap:16, alignItems:'flex-start'}}>
+                <div className="grow">
+                  <label>Voice (audible depends on blend)</label>
+                  <audio ref={voiceRef} src={voiceUrl||undefined} preload="auto" controls style={{width:'100%'}} />
+                </div>
+                <div className="grow">
+                  <label>Humming (audible depends on blend)</label>
+                  <audio ref={humRef} src={humUrl||undefined} preload="auto" controls style={{width:'100%'}} />
+                </div>
+              </div>
+              <p className="muted" style={{marginTop:8}}>Tip: keep both players paused; use the buttons above to play/pause in sync. The blend slider controls which track you hear.</p>
+            </div>
+          </div>
+
+          <div className="card" style={{marginTop:16}}>
+            <div style={{height:380}}>
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={pitchPts.map(p=>({time:p.t, f0:p.f0}))} margin={{ top: 10, right: 20, left: 10, bottom: 10 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#2a2e36" />
+                  <XAxis type="number" dataKey="time" domain={[xmin ?? 'auto', xmax ?? 'auto']} tick={{fill:'#9aa3b2'}} tickFormatter={v=>`${Number(v).toFixed(1)}s`} stroke="#454a53"/>
+                  <YAxis type="number" domain={[ymin ?? 'auto', ymax ?? 'auto']} tick={{fill:'#9aa3b2'}} tickFormatter={v=>`${Number(v).toFixed(0)}`} stroke="#454a53" label={{ value: 'F0 (Hz)', angle: -90, position: 'insideLeft', fill:'#9aa3b2' }} />
+                  <Tooltip contentStyle={{background:'#0f1218',border:'1px solid #2a2e36',color:'#e7e9ee'}} formatter={(v)=>`${Number(v).toFixed(1)} Hz`} labelFormatter={(v)=>`${Number(v).toFixed(3)} s`} />
+                  <Line type={smooth? 'monotone':'linear'} dataKey="f0" dot={false} stroke="#6ae2ff" strokeWidth={2} />
+                  <Scatter dataKey="f0" fill="#667085" />
+                  <ReferenceLine x={t + offset} stroke="#ff5c5c" strokeWidth={2} />
+                  <Brush dataKey="time" height={24} travellerWidth={8} stroke="#6ae2ff" />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          <p className="muted" style={{marginTop:12}}>If the red cursor drifts, nudge the <b>Cursor offset</b> to align. Because both files have identical length, synced play + shared seeking keeps them aligned.</p>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+  </script>
+</body>
+</html>
