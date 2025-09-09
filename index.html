@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Prosody Player — Waveform + Pulse</title>
+  <title>Prosody Player — Waveform + Ultra Pulse</title>
   <style>
     :root{--bg:#0b0c0f;--ink:#e7e9ee;--muted:#9aa3b2;--panel:#14161a;--accent:#6ae2ff}
     html,body{height:100%}
@@ -15,16 +15,16 @@
     .pill{margin-left:auto;display:inline-block;padding:2px 8px;border-radius:999px;background:#0f1218;border:1px solid rgba(255,255,255,.12);font-size:12px;color:var(--muted)}
     #overview{height:72px}
     #detail{height:210px;border-top:1px solid rgba(255,255,255,.06)}
-
-    /* Center pulse circle */
+    /* Pulse */
     .pulse-wrap{position:absolute;inset:0;pointer-events:none;display:grid;place-items:center}
-    .pulse{width:110px;height:110px;border-radius:999px;
-      background:radial-gradient( circle at 50% 45%, rgba(255,255,255,.10), rgba(255,255,255,.02) 60%, rgba(255,255,255,0) 70% );
-      outline:2px solid rgba(255,255,255,.12);
-      box-shadow:0 0 0 0 rgba(106,226,255,.25), 0 0 32px rgba(106,226,255,.08) inset;
-      transform:scale(1); transition:transform 80ms linear, box-shadow 80ms linear, outline-color 80ms linear;
+    .pulse{
+      width:110px;height:110px;border-radius:999px;
+      background:radial-gradient(circle at 50% 45%, rgba(255,255,255,.12), rgba(255,255,255,.02) 60%, rgba(255,255,255,0) 70%);
+      outline:2px solid rgba(106,226,255,.25);
+      box-shadow:0 0 0 0 rgba(106,226,255,.25), 0 0 32px rgba(106,226,255,.10) inset;
+      transform:scale(1); transition:transform 60ms linear, box-shadow 60ms linear, outline-color 60ms linear;
     }
-    .pulse.big{outline-color:rgba(106,226,255,.6)}
+    .pulse.big{outline-color:rgba(106,226,255,.9)}
   </style>
 </head>
 <body>
@@ -49,21 +49,18 @@
     const qp=(k,d)=>new URLSearchParams(location.search).get(k)||d;
     const src=qp('voice','voice.mp3');
 
-    // --- WaveSurfer: overview + detail (auto-center / zoom) ---
+    // WaveSurfer (overview + detail)
     const wsOverview=WaveSurfer.create({
       container:'#overview',height:72,waveColor:'#24313b',progressColor:'#435564',
       cursorColor:'transparent',barWidth:1,barGap:0,normalize:true,interact:true,dragToSeek:true,responsive:true
     });
-
-    let pxPerSec=180; // default zoom for detail view
+    let pxPerSec=180;
     const wsDetail=WaveSurfer.create({
       container:'#detail',height:210,waveColor:'#2b97ad',progressColor:'#6ae2ff',cursorColor:'#6ae2ff',
       barWidth:2,barGap:1,barRadius:1,minPxPerSec:pxPerSec,autoCenter:true,hideScrollbar:false,dragToSeek:true,
       normalize:true,responsive:true
     });
-
-    wsOverview.load(src);
-    wsDetail.load(src);
+    wsOverview.load(src); wsDetail.load(src);
 
     // Controls
     const timePill=document.getElementById('time');
@@ -71,43 +68,27 @@
     document.getElementById('zoomOut').onclick= ()=>{ pxPerSec=Math.max(40,  pxPerSec/1.25); wsDetail.setOptions({minPxPerSec:pxPerSec}); };
     document.getElementById('play').onclick   = ()=> wsDetail.play();
     document.getElementById('pause').onclick  = ()=> wsDetail.pause();
-
-    function syncOverview(){
-      const t=wsDetail.getCurrentTime()||0, d=wsDetail.getDuration()||1;
-      if(wsOverview.setTime) wsOverview.setTime(t); else wsOverview.seekTo(t/d);
-    }
-
-    wsDetail.on('timeupdate',()=>{
-      syncOverview();
-      const t=wsDetail.getCurrentTime()||0, d=wsDetail.getDuration()||0;
-      timePill.textContent=`${t.toFixed(2)} / ${d.toFixed(2)} s`;
-    });
-
+    function syncOverview(){ const t=wsDetail.getCurrentTime()||0, d=wsDetail.getDuration()||1; if(wsOverview.setTime) wsOverview.setTime(t); else wsOverview.seekTo(t/d); }
+    wsDetail.on('timeupdate',()=>{ syncOverview(); const t=wsDetail.getCurrentTime()||0, d=wsDetail.getDuration()||0; timePill.textContent=`${t.toFixed(2)} / ${d.toFixed(2)} s`; });
     wsDetail.on('seek',syncOverview);
     wsOverview.on('seek',rel=> wsDetail.seekTo(rel));
 
-    // ----------------- Pulse (dB-calibrated) -----------------
-    // We compute a short-time RMS envelope and map it to a pseudo-dB
-    // scale anchored to your Praat-like figures:
-    // floor=44.5 dB, threshold=76 dB, cap=81.9 dB.
-
+    // ---------- ULTRA-SENSITIVE PULSE ----------
     const pulseEl=document.getElementById('pulse');
 
-    // Fixed defaults (no URL tweaking needed)
-    const FRAME_MS = 80;   // window length (ms)
-    const HOP_MS   = 20;   // hop (ms)
-    const DB_FLOOR = 44.5; // min visual dB
-    const DB_THR   = 76.0; // start "thump"
-    const DB_CAP   = 81.9; // full size
-    const MIN_SCALE= 0.92; // quiet size
-    const MAX_SCALE= 3.25; // loud size
-    const GAMMA    = 1.8;  // emphasize peaks
-    const ATK_MS   = 30;   // visual attack
-    const REL_MS   = 150;  // visual release
+    // Envelope params (fixed)
+    const FRAME_MS = 80;  // analysis window
+    const HOP_MS   = 20;  // hop
+    // Sensitivity mapping (normalized RMS -> scale/glow)
+    const THR      = 0.08; // start blooming ~8% of max
+    const CAP      = 0.35; // full bloom ~35% of max
+    const GAMMA    = 0.55; // <1 boosts small values strongly
+    const ATK_MS   = 12;   // quick attack
+    const REL_MS   = 90;   // gentle release
+    const MIN_S    = 1.00; // min scale
+    const MAX_S    = 4.00; // max scale
 
     let env=null; // [{t, r}] normalized RMS 0..1
-    let r5=0.01, r99=0.5; // robust anchors (updated after analysis)
-
     wsDetail.on('ready', precomputeEnvelope);
 
     async function precomputeEnvelope(){
@@ -124,20 +105,14 @@
           let e=0; for(let j=0;j<frame;j++){ const v=ch[i+j]; e+=v*v; }
           const r=Math.sqrt(e/frame); if(r>maxR) maxR=r; out.push({t:i/sr, r});
         }
-        // normalize 0..1
-        for(const p of out){ p.r/=maxR; }
+        for(const p of out){ p.r/=maxR; } // normalize to 0..1
         env=out;
-        // robust anchors from percentiles
-        const vals=out.map(p=>p.r).sort((a,b)=>a-b);
-        const q=(pct)=> vals[Math.min(vals.length-1, Math.max(0, Math.round((pct/100)*vals.length)))] || 0;
-        r5 = q(5);
-        r99= Math.max(r5+1e-6, q(99));
-        ac.close();
         startPulseLoop();
+        ac.close();
       }catch(e){ console.warn('Envelope failed:', e); }
     }
 
-    function interpEnv(t){ // nearest (fast)
+    function interpEnv(t){
       if(!env||!env.length) return 0;
       let lo=0, hi=env.length-1;
       while(lo<hi){ const mid=(lo+hi)>>1; if(env[mid].t < t) lo=mid+1; else hi=mid; }
@@ -147,32 +122,24 @@
     let raf=0, smoothed=0, lastT=0;
     function startPulseLoop(){
       cancelAnimationFrame(raf);
-      const atk = Math.exp(-1 / ( (ATK_MS/1000) * 60 ));
-      const rel = Math.exp(-1 / ( (REL_MS/1000) * 60 ));
-      const dbSpan = Math.max(0.1, DB_CAP - DB_THR);
-      const mapDb = (r)=>{
-        // map r in [r5, r99] → [DB_FLOOR, DB_CAP]
-        const clamped = (r - r5) / (r99 - r5);
-        const x = Math.max(0, Math.min(1, clamped));
-        return DB_FLOOR + x * (DB_CAP - DB_FLOOR);
-      };
-
+      const atk = Math.exp(-1 / ((ATK_MS/1000)*60));
+      const rel = Math.exp(-1 / ((REL_MS/1000)*60));
       const loop=()=>{
         const t=wsDetail.getCurrentTime()||0;
         if(t!==lastT){
-          const r = interpEnv(t);
-          const dB = mapDb(r);
-          // progress above threshold
-          let x = (dB - DB_THR) / dbSpan; x = Math.max(0, Math.min(1, x));
-          x = Math.pow(x, GAMMA);
-          // attack/release smoothing
+          const r = interpEnv(t);                 // 0..1
+          let x = (r - THR) / (CAP - THR);        // threshold → cap
+          x = Math.max(0, Math.min(1, x));
+          x = Math.pow(x, GAMMA);                 // boost small values
           const coeff = (x>smoothed)? (1- Math.pow(atk,2)) : (1- Math.pow(rel,2));
           smoothed = smoothed + coeff * (x - smoothed);
-          // scale & visual
-          const s = MIN_SCALE + (MAX_SCALE - MIN_SCALE) * smoothed;
+
+          const s = MIN_S + (MAX_S - MIN_S) * smoothed;
           pulseEl.style.transform = `scale(${s.toFixed(3)})`;
-          pulseEl.classList.toggle('big', x>=0.999);
-          pulseEl.style.boxShadow = `0 0 0 ${Math.round(8*smoothed)}px rgba(106,226,255,${0.12+0.28*smoothed}), inset 0 0 ${Math.round(24+48*smoothed)}px rgba(106,226,255,${0.10+0.18*smoothed})`;
+          pulseEl.classList.toggle('big', x>=0.85);
+          pulseEl.style.boxShadow =
+            `0 0 0 ${Math.round(10+40*smoothed)}px rgba(106,226,255,${0.18+0.32*smoothed}), `+
+            `0 0 ${Math.round(32+48*smoothed)}px rgba(106,226,255,${0.10+0.24*smoothed}) inset`;
         }
         lastT=t;
         raf=requestAnimationFrame(loop);
