@@ -1,4 +1,5 @@
 <!doctype html>
+
 <html lang="en">
 <head>
   <meta charset="utf-8" />
@@ -29,16 +30,7 @@
     <h1 class="h1">Interactive PitchTier (loading…)</h1>
     <p class="muted">If this screen stays blank, your browser blocked a CDN. Try reloading or check the console (F12). The page will replace this message once scripts load.</p>
   </div>
-  <div id="root"></div>
-
-  <!-- React + Recharts (CDN) with fallbacks and defer to avoid race conditions -->
-  <script defer src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
-  <script defer src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
-  <script defer src="https://unpkg.com/recharts/umd/Recharts.min.js" crossorigin></script>
-  <!-- Fallback Recharts CDN -->
-  <script defer src="https://cdn.jsdelivr.net/npm/recharts/umd/Recharts.min.js" crossorigin></script>
-
-  <script>
+  <div id="root"></div>  <!-- React + Recharts (CDN) with fallbacks and defer to avoid race conditions -->  <script defer src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>  <script defer src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>  <script defer src="https://unpkg.com/recharts/umd/Recharts.min.js" crossorigin></script>  <!-- Fallback Recharts CDN -->  <script defer src="https://cdn.jsdelivr.net/npm/recharts/umd/Recharts.min.js" crossorigin></script>  <script>
   window.addEventListener('load', function(){
     try {
       if (!window.React || !window.ReactDOM) {
@@ -191,9 +183,9 @@
 
       ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(App));
     } catch (e) {
-      document.body.innerHTML = '<div class="wrap"><h1 class="h1">Runtime error</h1><pre style="white-space:pre-wrap" class="muted">'+String(e)+'</pre></div>';
-    }
-  });
-  </script>
+      document.body.innerHTML = '<div class="wrap"><h1 class="h1">Runtime error</h1><pre style="white-space:pre-wrap" class="muted">'+String(e)+'</pre></div>';}
+
+}); </script>
+
 </body>
 </html>
