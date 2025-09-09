@@ -4,7 +4,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Pitch visualiser – Praat PitchTier + dual audio (repo assets)</title>
+  <title>Pitch visualiser – Praat PitchTier + dual audio (no‑dependency)</title>
   <style>
     :root{--bg:#0b0c0f;--ink:#e7e9ee;--muted:#9aa3b2;--panel:#14161a;--accent:#6ae2ff;--danger:#ff6b6b}
     html,body{height:100%}
@@ -17,175 +17,204 @@
     @media(min-width:900px){.grid{grid-template-columns:1fr 1fr}}
     .row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
     .grow{flex:1 1 auto}
-    input[type=number]{background:#0f1218;border:1px solid rgba(255,255,255,.12);color:var(--ink);border-radius:10px;padding:8px 10px;width:120px}
+    input[type=number], input[type=range]{background:#0f1218;border:1px solid rgba(255,255,255,.12);color:var(--ink);border-radius:10px;padding:8px 10px}
+    input[type=range]{width:100%}
     button{background:#0f1218;border:1px solid rgba(255,255,255,.12);color:var(--ink);border-radius:999px;padding:8px 14px;cursor:pointer}
     .pill{display:inline-block;padding:2px 8px;border-radius:999px;background:#0f1218;border:1px solid rgba(255,255,255,.12);font-size:12px;color:var(--muted)}
-    .legend{display:flex;gap:12px;flex-wrap:wrap}
-    .dot{width:10px;height:10px;border-radius:50%}
-    .fallback{padding:24px;text-align:center}
+    svg{display:block;width:100%;height:380px}
+    .axis text{font-size:12px;fill:var(--muted)}
+    .axis path,.axis line{stroke:#2a2e36}
   </style>
 </head>
 <body>
-  <div class="fallback">
-    <h1 class="h1">Interactive PitchTier (loading…)</h1>
-    <p class="muted">If this screen stays blank, your browser blocked a CDN. Try reloading or check the console (F12). The page will replace this message once scripts load.</p>
+  <div class="wrap">
+    <div class="h1">Interactive PitchTier (synced to audio)</div>
+    <p class="muted" style="margin-top:0">Pure vanilla JS + SVG (no CDN). Files are loaded from the repo root: <b>pitch.PitchTier</b>, <b>voice.mp3</b>, <b>humming.mp3</b>. Use either player; the red cursor tracks time over F0. You can override names with query params: <code>?pitch=...</code>, <code>&voice=...</code>, <code>&hum=...</code>.</p><div class="grid" style="margin-top:16px">
+  <div class="card">
+    <div class="row" style="gap:16px;align-items:center">
+      <button id="btnReset">⏮️ Reset</button>
+      <button id="btnPlayVoice">▶️ Play voice</button>
+      <button id="btnPlayHum">▶️ Play humming</button>
+      <button id="btnPause">⏸️ Pause</button>
+      <div class="grow"></div>
+      <span class="pill" id="timepill">-- / -- s</span>
+    </div>
+    <div class="row" style="gap:16px;margin-top:10px">
+      <label>Cursor offset (s)
+        <input id="offset" type="number" step="0.05" value="0" />
+      </label>
+      <div class="grow"></div>
+      <label class="muted">Seek</label>
+      <input id="seek" type="range" min="0" max="0" step="0.01" value="0" />
+    </div>
+    <p id="status" class="muted" style="margin:10px 0 0"></p>
   </div>
-  <div id="root"></div>  <!-- React + Recharts (CDN) with fallbacks and defer to avoid race conditions -->  <script defer src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>  <script defer src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>  <script defer src="https://unpkg.com/recharts/umd/Recharts.min.js" crossorigin></script>  <!-- Fallback Recharts CDN -->  <script defer src="https://cdn.jsdelivr.net/npm/recharts/umd/Recharts.min.js" crossorigin></script>  <script>
-  window.addEventListener('load', function(){
+
+  <div class="card">
+    <div class="row" style="gap:16px;align-items:flex-start">
+      <div class="grow">
+        <div class="muted" style="font-size:13px;margin-bottom:6px">Player: audio 1 (voice) · <span id="vpath"></span></div>
+        <audio id="voice" preload="auto" controls style="width:100%"></audio>
+      </div>
+      <div class="grow">
+        <div class="muted" style="font-size:13px;margin-bottom:6px">Player: audio 2 (humming) · <span id="hpath"></span></div>
+        <audio id="hum" preload="auto" controls style="width:100%"></audio>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card" style="margin-top:16px">
+  <svg id="chart" viewBox="0 0 1000 400" preserveAspectRatio="none">
+    <g id="axes"></g>
+    <path id="f0path" d="" fill="none" stroke="var(--accent)" stroke-width="2" />
+    <g id="points" fill="#667085"></g>
+    <line id="cursor" x1="0" y1="0" x2="0" y2="400" stroke="var(--danger)" stroke-width="2"/>
+  </svg>
+</div>
+
+<p class="muted" style="margin-top:12px">Tip: use <b>Ctrl/Cmd+Shift+R</b> to bypass cache if you update the files.</p>
+
+  </div>  <script>
+  function qs(id){ return document.getElementById(id); }
+  function getParam(name, def){ const p = new URLSearchParams(location.search).get(name); return (p && p.trim()) || def; }
+  function parsePitchTier(text){
+    const f = s => s ? parseFloat(s) : NaN;
+    const xmin = (text.match(/xmin\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)/)||[])[1];
+    const xmax = (text.match(/xmax\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)/)||[])[1];
+    const times = [...text.matchAll(/\bnumber\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)/g)].map(m=>f(m[1]));
+    const vals  = [...text.matchAll(/\bvalue\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)/g)].map(m=>f(m[1]));
+    const pts=[]; const n=Math.min(times.length, vals.length);
+    for(let i=0;i<n;i++){ const t=times[i], v=vals[i]; if(Number.isFinite(t)&&Number.isFinite(v)) pts.push({t, f0:v}); }
+    pts.sort((a,b)=>a.t-b.t);
+    const _xmin = xmin? parseFloat(xmin) : (pts[0]?.t ?? 0);
+    const _xmax = xmax? parseFloat(xmax) : (pts[pts.length-1]?.t ?? 1);
+    return { pts, xmin:_xmin, xmax:_xmax };
+  }
+
+  (async function(){
+    const pitchPath = getParam('pitch','pitch.PitchTier');
+    const voicePath = getParam('voice','voice.mp3');
+    const humPath   = getParam('hum','humming.mp3');
+
+    qs('vpath').textContent = voicePath; qs('hpath').textContent = humPath;
+    qs('voice').src = voicePath; qs('hum').src = humPath;
+
+    const status = qs('status');
     try {
-      if (!window.React || !window.ReactDOM) {
-        document.body.innerHTML = '<div class="wrap"><h1 class="h1">Error: React failed to load</h1><p class="muted">CDN blocked? Check your network / browser extensions.</p></div>';
-        return;
+      status.textContent = 'Loading PitchTier…';
+      const txt = await fetch(pitchPath, { cache: 'no-store' }).then(r=>{ if(!r.ok) throw new Error('PitchTier not found: '+pitchPath); return r.text(); });
+      const { pts, xmin, xmax } = parsePitchTier(txt);
+      status.textContent = `Loaded ${pts.length} points; time ${xmin.toFixed(2)}–${xmax.toFixed(2)} s`;
+      drawChart(pts, xmin, xmax);
+    } catch (e){
+      status.textContent = 'Error: '+ e.message;
+    }
+
+    const v = qs('voice');
+    const h = qs('hum');
+    const seek = qs('seek');
+    const timepill = qs('timepill');
+    const offsetEl = qs('offset');
+    const cursor = qs('cursor');
+
+    function updatePill(){ timepill.textContent = `${isFinite(v.duration)?v.currentTime.toFixed(2):'--'} / ${isFinite(v.duration)?v.duration.toFixed(2):'--'} s`; }
+    function setAllTime(sec){ if(isFinite(sec)){ if(v) v.currentTime = sec; if(h) h.currentTime = sec; seek.value = String(sec); updateCursor(); updatePill(); } }
+    function updateCursor(){
+      const off = parseFloat(offsetEl.value||'0')||0;
+      const t = (v && !v.paused) ? v.currentTime : ((h && !h.paused) ? h.currentTime : v.currentTime||0);
+      const x = timeToX(t + off);
+      cursor.setAttribute('x1', x); cursor.setAttribute('x2', x);
+    }
+
+    v.addEventListener('loadedmetadata', ()=>{ seek.max = String(v.duration||0); updatePill(); });
+    h.addEventListener('loadedmetadata', ()=>{ if(!seek.max || seek.max==='0') seek.max = String(h.duration||0); updatePill(); });
+
+    v.addEventListener('timeupdate', ()=>{ if(!v.paused){ h.currentTime = v.currentTime; seek.value = String(v.currentTime); updateCursor(); updatePill(); } });
+    h.addEventListener('timeupdate', ()=>{ if(!h.paused){ v.currentTime = h.currentTime; seek.value = String(h.currentTime); updateCursor(); updatePill(); } });
+
+    qs('btnPlayVoice').onclick = ()=>{ v.play(); h.play(); };
+    qs('btnPlayHum').onclick   = ()=>{ h.play(); v.play(); };
+    qs('btnPause').onclick     = ()=>{ v.pause(); h.pause(); };
+    qs('btnReset').onclick     = ()=> setAllTime(0);
+    seek.oninput               = (e)=> setAllTime(parseFloat(e.target.value));
+    offsetEl.oninput           = updateCursor;
+
+    function raf(){ updateCursor(); requestAnimationFrame(raf); }
+    requestAnimationFrame(raf);
+
+    let _scaleX = (t)=>t, _scaleY = (y)=>y;
+    function timeToX(t){ return _scaleX ? _scaleX(t) : 0; }
+
+    function drawChart(points, xmin, xmax){
+      const svg = qs('chart');
+      const axes = qs('axes');
+      const path = qs('f0path');
+      const dots = qs('points');
+
+      const vb = svg.viewBox.baseVal; // 0 0 1000 400
+      const W = vb.width, H = vb.height;
+      const padL=60, padR=20, padT=20, padB=30;
+      const innerW = W - padL - padR;
+      const innerH = H - padT - padB;
+
+      const ys = points.map(p=>p.f0);
+      const minY = Math.min(...ys); const maxY = Math.max(...ys);
+      const pad = (maxY - minY) * 0.1 || 10;
+      const y0 = Math.max(0, minY - pad), y1 = maxY + pad;
+
+      _scaleX = (t)=> padL + ( (t - xmin) / (xmax - xmin) ) * innerW;
+      _scaleY = (y)=> padT + (1 - ( (y - y0) / (y1 - y0) )) * innerH;
+
+      axes.innerHTML = '';
+      let line = document.createElementNS('http://www.w3.org/2000/svg','line');
+      line.setAttribute('x1', padL); line.setAttribute('y1', H-padB);
+      line.setAttribute('x2', W-padR); line.setAttribute('y2', H-padB);
+      line.setAttribute('stroke', '#2a2e36'); axes.appendChild(line);
+      line = document.createElementNS('http://www.w3.org/2000/svg','line');
+      line.setAttribute('x1', padL); line.setAttribute('y1', padT);
+      line.setAttribute('x2', padL); line.setAttribute('y2', H-padB);
+      line.setAttribute('stroke', '#2a2e36'); axes.appendChild(line);
+      const xticks = 10;
+      for(let i=0;i<=xticks;i++){
+        const t = xmin + (i/xticks)*(xmax-xmin);
+        const x = _scaleX(t);
+        const tick = document.createElementNS('http://www.w3.org/2000/svg','line');
+        tick.setAttribute('x1', x); tick.setAttribute('y1', H-padB);
+        tick.setAttribute('x2', x); tick.setAttribute('y2', H-padB+6);
+        tick.setAttribute('stroke', '#2a2e36'); axes.appendChild(tick);
+        const txt = document.createElementNS('http://www.w3.org/2000/svg','text');
+        txt.setAttribute('x', x); txt.setAttribute('y', H-8);
+        txt.setAttribute('text-anchor','middle'); txt.setAttribute('fill','var(--muted)'); txt.textContent = t.toFixed(1)+'s';
+        axes.appendChild(txt);
       }
-      if (!window.Recharts) {
-        document.body.innerHTML = '<div class="wrap"><h1 class="h1">Error: Recharts failed to load</h1><p class="muted">CDN blocked? Try hard-refresh (Ctrl/Cmd+Shift+R). If it persists, we can ship a no-dependency SVG version.</p></div>';
-        return;
-      }
-
-      const { useEffect, useMemo, useRef, useState } = React;
-      const { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, Scatter, Brush } = Recharts;
-
-      function getParam(name, fallback){
-        const p = new URLSearchParams(location.search).get(name);
-        return (p && p.trim()) || fallback;
-      }
-      function parsePitchTier(text){
-        const f = s => s ? parseFloat(s) : NaN;
-        const xmin = (text.match(/xmin\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)/)||[])[1];
-        const xmax = (text.match(/xmax\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]\d+)?)/)||[])[1];
-        const times = [...text.matchAll(/\bnumber\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)/g)].map(m=>f(m[1]));
-        const vals  = [...text.matchAll(/\bvalue\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)/g)].map(m=>f(m[1]));
-        const pts=[]; const n=Math.min(times.length, vals.length);
-        for(let i=0;i<n;i++){ const t=times[i], v=vals[i]; if(Number.isFinite(t)&&Number.isFinite(v)) pts.push({t:t,f0:v}); }
-        pts.sort((a,b)=>a.t-b.t);
-        const _xmin = xmin? parseFloat(xmin) : (pts[0]?.t ?? 0);
-        const _xmax = xmax? parseFloat(xmax) : (pts[pts.length-1]?.t ?? 1);
-        return {pts,xmin:_xmin,xmax:_xmax};
-      }
-
-      function App(){
-        const pitchPath = getParam('pitch','pitch.PitchTier');
-        const voicePath = getParam('voice','voice.mp3');
-        const humPath   = getParam('hum','humming.mp3');
-
-        const [pitchPts,setPitchPts] = useState([]);
-        const [xmin,setXmin] = useState(null); const [xmax,setXmax]=useState(null);
-        const [ymin,setYmin] = useState(null); const [ymax,setYmax]=useState(null);
-        const [offset,setOffset] = useState(0);
-        const [duration,setDuration] = useState(0);
-        const [t,setT] = useState(0);
-        const [err,setErr] = useState(null);
-
-        const voiceRef = useRef(null);
-        const humRef   = useRef(null);
-        const rafRef   = useRef(0);
-        const [syncPlayers,setSyncPlayers] = useState(true);
-
-        useEffect(()=>{
-          fetch(pitchPath, { cache: 'no-store' }).then(r=>{
-            if(!r.ok) throw new Error('PitchTier not found: '+pitchPath);
-            return r.text();
-          }).then(txt=>{
-            const {pts,xmin,xmax} = parsePitchTier(txt);
-            setPitchPts(pts); setXmin(xmin); setXmax(xmax);
-            if(pts.length){
-              const ys = pts.map(p=>p.f0); const minY = Math.min(...ys); const maxY = Math.max(...ys); const pad=(maxY-minY)*0.1||10;
-              setYmin(Math.max(0,minY-pad)); setYmax(maxY+pad);
-            }
-          }).catch(e=> setErr(e.message));
-        },[pitchPath]);
-
-        useEffect(()=>{
-          const v=voiceRef.current, h=humRef.current; if(!v && !h) return;
-          function onLoaded(){ setDuration((v?.duration||h?.duration||0)); }
-          v&&v.addEventListener('loadedmetadata',onLoaded);
-          h&&h.addEventListener('loadedmetadata',onLoaded);
-          const loop = ()=>{
-            const master = (v && !v.paused) ? v : ((h && !h.paused) ? h : (v||h));
-            if(master){
-              const ct = master.currentTime; setT(ct);
-              if(syncPlayers){
-                if(v && master!==v && Math.abs(v.currentTime-ct)>0.04) v.currentTime=ct;
-                if(h && master!==h && Math.abs(h.currentTime-ct)>0.04) h.currentTime=ct;
-              }
-            }
-            rafRef.current = requestAnimationFrame(loop);
-          }
-          rafRef.current = requestAnimationFrame(loop);
-          return ()=> cancelAnimationFrame(rafRef.current);
-        },[voiceRef.current, humRef.current, syncPlayers]);
-
-        function play(target){ const v=voiceRef.current, h=humRef.current; if(!v||!h) return; if(target==='voice'){v.play(); if(syncPlayers) h.play();} else {h.play(); if(syncPlayers) v.play();} }
-        function pauseAll(){ const v=voiceRef.current, h=humRef.current; v&&v.pause(); h&&h.pause(); }
-        function seekAll(sec){ const v=voiceRef.current, h=humRef.current; if(v) v.currentTime=sec; if(h) h.currentTime=sec; setT(sec); }
-
-        const data = React.useMemo(()=> pitchPts.map(p=>({time:p.t, f0:p.f0})), [pitchPts]);
-
-        return React.createElement('div',{className:'wrap'},[
-          React.createElement('div',{key:'hdr'},[
-            React.createElement('div',{className:'h1'},'Interactive PitchTier (synced to audio)'),
-            React.createElement('p',{className:'muted'},'Files are loaded from this repository. Use either player below; the red cursor tracks time over F0.'),
-          ]),
-
-          React.createElement('div',{key:'grid',className:'grid',style:{marginTop:16}},[
-            React.createElement('div',{key:'a',className:'card'},[
-              React.createElement('div',{className:'row',style:{gap:16,alignItems:'center'}},[
-                React.createElement('button',{onClick:()=>seekAll(0)},'⏮️ Reset'),
-                React.createElement('button',{onClick:()=>play('voice')},'▶️ Play voice'),
-                React.createElement('button',{onClick:()=>play('hum')},'▶️ Play humming'),
-                React.createElement('button',{onClick:pauseAll},'⏸️ Pause'),
-                React.createElement('div',{className:'grow'}),
-                React.createElement('span',{className:'pill'}, `${isFinite(t)?t.toFixed(2):'--'} / ${isFinite(duration)?duration.toFixed(2):'--'} s`),
-              ]),
-              React.createElement('div',{className:'row',style:{marginTop:10,gap:16}},[
-                React.createElement('label',null,'Cursor offset (s)'),
-                React.createElement('input',{type:'number',step:'0.05',value:offset,onChange:e=>setOffset(parseFloat(e.target.value)||0)}),
-                React.createElement('div',{className:'grow'}),
-                pitchPts.length?null:React.createElement('span',{className:'pill'},'Loading PitchTier…'),
-                err?React.createElement('span',{className:'pill',style:{color:'#ff9aa2'}},String(err)):null,
-              ]),
-            ]),
-
-            React.createElement('div',{key:'b',className:'card'},[
-              React.createElement('div',{className:'row',style:{gap:16,alignItems:'flex-start'}},[
-                React.createElement('div',{className:'grow'},[
-                  React.createElement('div',null,[React.createElement('div',{className:'muted',style:{fontSize:13,marginBottom:6}},`Player: audio 1 (voice) · ${voicePath}`)]),
-                  React.createElement('audio',{ref:voiceRef,src:voicePath,preload:'auto',controls:true,style:{width:'100%'}})
-                ]),
-                React.createElement('div',{className:'grow'},[
-                  React.createElement('div',null,[React.createElement('div',{className:'muted',style:{fontSize:13,marginBottom:6}},`Player: audio 2 (humming) · ${humPath}`)]),
-                  React.createElement('audio',{ref:humRef,src:humPath,preload:'auto',controls:true,style:{width:'100%'}})
-                ])
-              ])
-            ])
-          ]),
-
-          React.createElement('div',{key:'chart',className:'card',style:{marginTop:16}},[
-            React.createElement('div',{style:{height:380}},[
-              React.createElement(ResponsiveContainer,{width:'100%',height:'100%'},[
-                React.createElement(LineChart,{data:data,margin:{top:10,right:20,left:10,bottom:10}},[
-                  React.createElement(CartesianGrid,{strokeDasharray:'3 3',stroke:'#2a2e36'}),
-                  React.createElement(XAxis,{type:'number',dataKey:'time',domain:[xmin??'auto',xmax??'auto'],tick:{fill:'#9aa3b2'},tickFormatter:(v)=>Number(v).toFixed(1)+'s',stroke:'#454a53'}),
-                  React.createElement(YAxis,{type:'number',domain:[ymin??'auto',ymax??'auto'],tick:{fill:'#9aa3b2'},tickFormatter:(v)=>Number(v).toFixed(0),stroke:'#454a53',label:{value:'F0 (Hz)',angle:-90,position:'insideLeft',fill:'#9aa3b2'}}),
-                  React.createElement(Tooltip,{contentStyle:{background:'#0f1218',border:'1px solid #2a2e36',color:'#e7e9ee'},formatter:(v)=>Number(v).toFixed(1)+' Hz',labelFormatter:(v)=>Number(v).toFixed(3)+' s'}),
-                  React.createElement(Line,{type:'monotone',dataKey:'f0',dot:false,stroke:'#6ae2ff',strokeWidth:2}),
-                  React.createElement(Scatter,{dataKey:'f0',fill:'#667085'}),
-                  React.createElement(ReferenceLine,{x:function(){return (t + offset);}(),stroke:'#ff6b6b',strokeWidth:2}),
-                  React.createElement(Brush,{dataKey:'time',height:24,travellerWidth:8,stroke:'#6ae2ff'})
-                ])
-              ])
-            ])
-          ]),
-
-          React.createElement('p',{className:'muted',style:{marginTop:12}},'Tip: files must exist at repo root: pitch.PitchTier, voice.mp3, humming.mp3. To bypass cache after updates, add ?v=2 to the URL or use Ctrl/Cmd+Shift+R.')
-        ]);
+      const yticks = 6;
+      for(let i=0;i<=yticks;i++){
+        const yv = y0 + (i/yticks)*(y1-y0);
+        const y = _scaleY(yv);
+        const tick = document.createElementNS('http://www.w3.org/2000/svg','line');
+        tick.setAttribute('x1', padL-6); tick.setAttribute('y1', y);
+        tick.setAttribute('x2', padL); tick.setAttribute('y2', y);
+        tick.setAttribute('stroke', '#2a2e36'); axes.appendChild(tick);
+        const txt = document.createElementNS('http://www.w3.org/2000/svg','text');
+        txt.setAttribute('x', 8); txt.setAttribute('y', y+4);
+        txt.setAttribute('fill','var(--muted)'); txt.textContent = Math.round(yv);
+        axes.appendChild(txt);
       }
 
-      ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(App));
-    } catch (e) {
-      document.body.innerHTML = '<div class="wrap"><h1 class="h1">Runtime error</h1><pre style="white-space:pre-wrap" class="muted">'+String(e)+'</pre></div>';}
+      const d = points.map((p,i)=> (i? 'L':'M') + _scaleX(p.t) + ' ' + _scaleY(p.f0)).join(' ');
+      path.setAttribute('d', d);
 
-}); </script>
+      dots.innerHTML = '';
+      for(const p of points){
+        const c = document.createElementNS('http://www.w3.org/2000/svg','circle');
+        c.setAttribute('cx', _scaleX(p.t)); c.setAttribute('cy', _scaleY(p.f0)); c.setAttribute('r','2');
+        dots.appendChild(c);
+      }
 
-</body>
+      qs('cursor').setAttribute('y1', padT);
+      qs('cursor').setAttribute('y2', H-padB);
+    }
+  })();
+  </script></body>
 </html>
