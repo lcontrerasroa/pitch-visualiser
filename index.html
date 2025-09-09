@@ -3,33 +3,37 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Prosody Player — Waveform + Ultra Pulse</title>
+  <title>Prosody Player — Waveform + Pulse (separate)</title>
   <style>
     :root{--bg:#0b0c0f;--ink:#e7e9ee;--muted:#9aa3b2;--panel:#14161a;--accent:#6ae2ff}
     html,body{height:100%}
     body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial}
-    .wrap{max-width:1100px;margin:0 auto;padding:24px}
+    .wrap{max-width:1100px;margin:0 auto;padding:24px;display:grid;gap:18px}
     .card{position:relative;background:var(--panel);border:1px solid rgba(255,255,255,.08);border-radius:16px;box-shadow:0 12px 28px rgba(0,0,0,.25);overflow:hidden}
     .controls{display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid rgba(255,255,255,.06)}
     .btn{background:#0f1218;border:1px solid rgba(255,255,255,.12);color:var(--ink);border-radius:999px;padding:8px 14px;cursor:pointer}
     .pill{margin-left:auto;display:inline-block;padding:2px 8px;border-radius:999px;background:#0f1218;border:1px solid rgba(255,255,255,.12);font-size:12px;color:var(--muted)}
     #overview{height:72px}
     #detail{height:210px;border-top:1px solid rgba(255,255,255,.06)}
-    /* Pulse */
-    .pulse-wrap{position:absolute;inset:0;pointer-events:none;display:grid;place-items:center}
+
+    /* Pulse panel (separate strip) */
+    .pulse-panel{height:260px; display:grid; place-items:center}
     .pulse{
-      width:110px;height:110px;border-radius:999px;
+      width:120px;height:120px;border-radius:999px;
       background:radial-gradient(circle at 50% 45%, rgba(255,255,255,.12), rgba(255,255,255,.02) 60%, rgba(255,255,255,0) 70%);
       outline:2px solid rgba(106,226,255,.25);
-      box-shadow:0 0 0 0 rgba(106,226,255,.25), 0 0 32px rgba(106,226,255,.10) inset;
-      transform:scale(1); transition:transform 60ms linear, box-shadow 60ms linear, outline-color 60ms linear;
+      box-shadow:0 0 0 0 rgba(106,226,255,.22), 0 0 32px rgba(106,226,255,.10) inset;
+      transform:scale(1);
+      transition:transform 60ms linear, box-shadow 60ms linear, outline-color 60ms linear;
     }
-    .pulse.big{outline-color:rgba(106,226,255,.9)}
+    .pulse.flash { outline-color: rgba(106,226,255,1); }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <div class="card">
+
+    <!-- Waveform card -->
+    <div class="card" id="wf">
       <div class="controls">
         <button class="btn" id="play">▶️</button>
         <button class="btn" id="pause">⏸️</button>
@@ -39,28 +43,39 @@
       </div>
       <div id="overview"></div>
       <div id="detail"></div>
-      <div class="pulse-wrap"><div id="pulse" class="pulse"></div></div>
     </div>
+
+    <!-- Pulse card (separate, no overlay) -->
+    <div class="card pulse-panel" id="pulseCard">
+      <div id="pulse" class="pulse"></div>
+    </div>
+
   </div>
 
   <script src="./wavesurfer.min.js"></script>
   <script>
+  // ------------ WaveSurfer: overview + detail ------------
   (function(){
     const qp=(k,d)=>new URLSearchParams(location.search).get(k)||d;
     const src=qp('voice','voice.mp3');
 
-    // WaveSurfer (overview + detail)
     const wsOverview=WaveSurfer.create({
       container:'#overview',height:72,waveColor:'#24313b',progressColor:'#435564',
       cursorColor:'transparent',barWidth:1,barGap:0,normalize:true,interact:true,dragToSeek:true,responsive:true
     });
+
     let pxPerSec=180;
     const wsDetail=WaveSurfer.create({
       container:'#detail',height:210,waveColor:'#2b97ad',progressColor:'#6ae2ff',cursorColor:'#6ae2ff',
       barWidth:2,barGap:1,barRadius:1,minPxPerSec:pxPerSec,autoCenter:true,hideScrollbar:false,dragToSeek:true,
       normalize:true,responsive:true
     });
-    wsOverview.load(src); wsDetail.load(src);
+
+    // expose globally so pulse loop can read current time
+    window.wsDetail = wsDetail;
+
+    wsOverview.load(src);
+    wsDetail.load(src);
 
     // Controls
     const timePill=document.getElementById('time');
@@ -68,65 +83,72 @@
     document.getElementById('zoomOut').onclick= ()=>{ pxPerSec=Math.max(40,  pxPerSec/1.25); wsDetail.setOptions({minPxPerSec:pxPerSec}); };
     document.getElementById('play').onclick   = ()=> wsDetail.play();
     document.getElementById('pause').onclick  = ()=> wsDetail.pause();
+
     function syncOverview(){ const t=wsDetail.getCurrentTime()||0, d=wsDetail.getDuration()||1; if(wsOverview.setTime) wsOverview.setTime(t); else wsOverview.seekTo(t/d); }
     wsDetail.on('timeupdate',()=>{ syncOverview(); const t=wsDetail.getCurrentTime()||0, d=wsDetail.getDuration()||0; timePill.textContent=`${t.toFixed(2)} / ${d.toFixed(2)} s`; });
     wsDetail.on('seek',syncOverview);
     wsOverview.on('seek',rel=> wsDetail.seekTo(rel));
+  })();
+  </script>
 
-   <!-- ---------- ULTRA-SENSITIVE PULSE (PC) ---------- -->
-<style>
-  .pulse.flash { outline-color: rgba(106,226,255,1); }
-</style>
-<script>
+  <script>
+  // --------------- Ultra-sensitive Pulse (separate) ---------------
   (function(){
+    const qp=(k,d)=>new URLSearchParams(location.search).get(k)||d;
+    const src=qp('voice','voice.mp3');
     const pulseEl = document.getElementById('pulse');
 
-    // High-resolution analysis (CPU-friendly on desktop)
+    // High-resolution envelope (desktop-friendly)
     const FRAME_MS = 20;   // analysis window
     const HOP_MS   = 5;    // hop
-    // Sensitivity (normalized RMS -> response)
-    const THR      = 0.03; // start blooming ~3% of max
+    // Sensitivity mapping (normalized RMS -> response)
+    const THR      = 0.03; // start bloom ~3% of max
     const CAP      = 0.18; // full bloom ~18% of max
     const GAMMA    = 0.45; // <1 boosts small values a lot
     // Visual dynamics
-    const ATK_MS   = 8;    // very quick attack
-    const REL_MS   = 80;   // quick release
-    const MIN_S    = 1.00; // min scale
+    const ATK_MS   = 8;    // quick attack
+    const REL_MS   = 90;   // gentle release
+    const MIN_S    = 1.00; // base scale
     const MAX_S    = 4.80; // max scale
 
     let env = null; // [{t, r}] normalized RMS 0..1
 
-    // Use WaveSurfer's decoded buffer if available (avoids double decode)
-    const ws = window.wsDetail; // ensure your wsDetail variable is global
-    ws.on('ready', precomputeEnvelope);
+    // Build envelope once the audio is ready (or on first play)
+    function arm(){
+      if (env) return;
+      precomputeEnvelope().then(startPulseLoop).catch(e=>console.warn('Envelope failed:', e));
+    }
+
+    // If WS is already created, listen to ready; also arm on play click
+    const ws = window.wsDetail;
+    if (ws) ws.on('ready', arm);
+    document.getElementById('play').addEventListener('click', arm, {once:true});
 
     async function precomputeEnvelope(){
-      try {
-        let buf = ws.getDecodedData && ws.getDecodedData();
-        if (!buf) {
-          const ac = new (window.AudioContext||window.webkitAudioContext)();
-          if (ac.state === 'suspended') { try { await ac.resume(); } catch{} }
-          const ab = await fetch((new URLSearchParams(location.search).get('voice'))||'voice.mp3',{cache:'no-store'}).then(r=>r.arrayBuffer());
-          buf = await ac.decodeAudioData(ab);
-          ac.close();
-        }
-        const sr = buf.sampleRate, ch = buf.getChannelData(0);
-        const frame = Math.max(64, Math.round(FRAME_MS*sr/1000));
-        const hop   = Math.max(16, Math.round(HOP_MS  *sr/1000));
-        const out = []; let maxR = 1e-12;
-        for (let i=0; i+frame<=ch.length; i+=hop){
-          let e=0; for (let j=0;j<frame;j++){ const v=ch[i+j]; e+=v*v; }
-          const r = Math.sqrt(e/frame); if (r>maxR) maxR=r; out.push({t:i/sr, r});
-        }
-        for (const p of out) p.r /= maxR; // normalize 0..1
-        env = out;
-        startPulseLoop();
-      } catch(e){ console.warn('Envelope failed:', e); }
+      // Prefer using the decoded buffer from WaveSurfer v7+ (if available)
+      let buf = (ws && ws.getDecodedData && ws.getDecodedData());
+      if (!buf) {
+        const ac = new (window.AudioContext||window.webkitAudioContext)();
+        if (ac.state === 'suspended') { try { await ac.resume(); } catch{} }
+        const ab = await fetch(src,{cache:'no-store'}).then(r=>r.arrayBuffer());
+        buf = await ac.decodeAudioData(ab);
+        ac.close();
+      }
+      const sr = buf.sampleRate, ch = buf.getChannelData(0);
+      const frame = Math.max(64, Math.round(FRAME_MS*sr/1000));
+      const hop   = Math.max(16, Math.round(HOP_MS  *sr/1000));
+      const out = []; let maxR = 1e-12;
+      for (let i=0; i+frame<=ch.length; i+=hop){
+        let e=0; for (let j=0;j<frame;j++){ const v=ch[i+j]; e+=v*v; }
+        const r = Math.sqrt(e/frame); if (r>maxR) maxR=r; out.push({t:i/sr, r});
+      }
+      for (const p of out) p.r /= maxR; // normalize to 0..1
+      env = out;
     }
 
     function interpEnv(t){
       if (!env || !env.length) return 0;
-      // binary search for nearest frame
+      // binary search nearest frame
       let lo=0, hi=env.length-1;
       while (lo<hi){ const mid=(lo+hi)>>1; if (env[mid].t < t) lo=mid+1; else hi=mid; }
       return env[Math.max(0, Math.min(env.length-1, lo))].r;
@@ -139,9 +161,9 @@
       const atk = fpsCoef(ATK_MS), rel = fpsCoef(REL_MS);
 
       const loop=()=>{
-        const t = ws.getCurrentTime()||0;
+        const t = (window.wsDetail && window.wsDetail.getCurrentTime && window.wsDetail.getCurrentTime()) || 0;
         const r = interpEnv(t);                 // 0..1
-        let x = (r - THR) / (CAP - THR);        // normalize to threshold/cap
+        let x = (r - THR) / (CAP - THR);        // threshold→cap
         x = Math.max(0, Math.min(1, x));
         x = Math.pow(x, GAMMA);                 // boost small values
 
@@ -156,7 +178,6 @@
           `0 0 0 ${Math.round(12+50*smoothed)}px rgba(106,226,255,${glow}), `+
           `0 0 ${Math.round(32+64*smoothed)}px rgba(106,226,255,${0.12+0.28*smoothed}) inset`;
 
-        // quick flash when crossing strong accent
         const flashing = (x>=0.85 && x>lastX);
         pulseEl.classList.toggle('flash', flashing);
         lastX = x;
@@ -166,7 +187,6 @@
       raf = requestAnimationFrame(loop);
     }
   })();
-</script>
-
+  </script>
 </body>
 </html>
