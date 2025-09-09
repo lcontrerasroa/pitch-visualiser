@@ -115,36 +115,47 @@
 
     async function computePitch(){
       if(pitchReady) return; // run once
-      try{
-        // Create/resume AudioContext after a gesture for mobile compatibility
-        const ac = new (window.AudioContext||window.webkitAudioContext)();
-        if(ac.state === 'suspended'){ try{ await ac.resume(); }catch(_){} }
-        const ab = await fetch(src, {cache:'no-store'}).then(r=>r.arrayBuffer());
-        const buf = await ac.decodeAudioData(ab);
-        const s = buf.getChannelData(0); const sr = buf.sampleRate;
-        const frame=2048, hop=256; // ~46 ms / ~6 ms
-        const minF=60, maxF=400; const minLag=Math.floor(sr/maxF), maxLag=Math.floor(sr/minF);
-        const win = new Float32Array(frame); for(let i=0;i<frame;i++){ win[i]=0.5*(1-Math.cos(2*Math.PI*i/(frame-1))); }
-        const out=[];
-        for(let i=0;i+frame<s.length; i+=hop){
-          let best=0, lagBest=0; let n1=0,n2=0,corr=0;
-          const a = new Float32Array(frame);
-          for(let j=0;j<frame;j++){ a[j]=s[i+j]*win[j]; }
-          for(let lag=minLag; lag<=maxLag; lag++){
-            corr=0; n1=0; n2=0;
-            for(let j=0;j<frame-lag;j++){
-              const x=a[j]; const y=s[i+j+lag]*win[j+lag];
-              corr += x*y; n1 += x*x; n2 += y*y;
+      (async()=>{
+        try{
+          const ac = new (window.AudioContext||window.webkitAudioContext)();
+          if(ac.state === 'suspended'){ try{ await ac.resume(); }catch(_){} }
+          const ab = await fetch(src, {cache:'no-store'}).then(r=>r.arrayBuffer());
+          const buf = await ac.decodeAudioData(ab);
+          // ---- downsample for speed (mobile-safe) ----
+          const target = 12000; // ~11–12 kHz
+          const sr0 = buf.sampleRate;
+          const factor = Math.max(1, Math.floor(sr0/target));
+          const sr = sr0 / factor;
+          const ch = buf.getChannelData(0);
+          const N = Math.floor(ch.length / factor);
+          const s = new Float32Array(N);
+          for(let j=0,i=0; j<N; j++, i+=factor){ s[j] = ch[i]; }
+
+          const frame=1024, hop=256; // 85 ms window at 12k, 21 ms hop
+          const minF=60, maxF=400; const minLag=Math.floor(sr/maxF), maxLag=Math.floor(sr/minF);
+          const win = new Float32Array(frame); for(let i=0;i<frame;i++){ win[i]=0.5*(1-Math.cos(2*Math.PI*i/(frame-1))); }
+          const out=[];
+
+          for(let idx=0,i=0; i+frame < s.length; i+=hop, idx++){
+            let best=0, lagBest=0;
+            for(let lag=minLag; lag<=maxLag; lag++){
+              let corr=0, n1=0, n2=0;
+              for(let j=0;j<frame-lag;j++){
+                const a = s[i+j]*win[j];
+                const b = s[i+j+lag]*win[j+lag];
+                corr += a*b; n1 += a*a; n2 += b*b;
+              }
+              const c = corr / (Math.sqrt(n1*n2) + 1e-12);
+              if(c>best){best=c; lagBest=lag;}
             }
-            const c = corr/Math.sqrt((n1||1e-12)*(n2||1e-12));
-            if(c>best){best=c; lagBest=lag;}
+            const cth=0.65; const f0 = (best>cth)? (sr/lagBest) : 0;
+            out.push({t:i/sr, f0});
+            if((idx % 40)===0){ f0pts = out.slice(); drawPitch(); await new Promise(requestAnimationFrame); }
           }
-          const cth=0.6; const f0 = (best>cth)? (sr/lagBest) : 0;
-          out.push({t:i/sr, f0});
-        }
-        for(let k=1;k<out.length-1;k++){ out[k].f0 = out[k-1].f0*0.25 + out[k].f0*0.5 + out[k+1].f0*0.25; }
-        f0pts = out; pitchReady = true; resizePitch(); drawPitch(); ac.close();
-      }catch(e){ console.warn('Pitch analysis failed', e); }
+          for(let k=1;k<out.length-1;k++){ out[k].f0 = out[k-1].f0*0.25 + out[k].f0*0.5 + out[k+1].f0*0.25; }
+          f0pts = out; pitchReady = true; resizePitch(); drawPitch(); ac.close();
+        }catch(e){ console.warn('Pitch analysis failed', e); }
+      })();
     }
 
     // Trigger pitch analysis on first play (mobile safe), and also after load on desktop
@@ -159,6 +170,30 @@
       // grid
       pctx.strokeStyle = 'rgba(255,255,255,.06)';
       for(let i=1;i<=3;i++){ const y=(H*i/4); pctx.beginPath(); pctx.moveTo(0,y+0.5); pctx.lineTo(W,y+0.5); pctx.stroke(); }
+
+      if(!f0pts || !f0pts.length) return;
+      const fmin=60, fmax=400; const dur = wsDetail.getDuration() || (f0pts.at(-1)?.t || 1);
+      const widthPx = pitchCanvas.clientWidth || W;
+      const secondsVisible = widthPx / pxPerSec;
+      const cur = wsDetail.getCurrentTime() || 0;
+      const maxStart = Math.max(0, dur - secondsVisible);
+      const start = Math.max(0, Math.min(cur - secondsVisible/2, maxStart));
+      const end = start + secondsVisible;
+
+      pctx.strokeStyle = '#4be4ff'; pctx.lineWidth = 3; pctx.beginPath(); let on=false;
+      for(const p of f0pts){
+        if(p.t < start || p.t > end || p.f0<=0) { on=false; continue; }
+        const x = ( (p.t - start) * pxPerSec );
+        const ratio = Math.max(0, Math.min(1, (p.f0 - fmin)/(fmax - fmin)));
+        const y = H - ratio*H;
+        if(!on){ pctx.moveTo(x,y); on=true; } else { pctx.lineTo(x,y); }
+      }
+      pctx.stroke();
+
+      // playhead at center
+      const x = (secondsVisible/2) * pxPerSec;
+      pctx.strokeStyle = 'var(--cursor)'; pctx.lineWidth=2; pctx.beginPath(); pctx.moveTo(x+0.5,0); pctx.lineTo(x+0.5,H); pctx.stroke();
+    }
 
       if(!f0pts || !f0pts.length) return;
       const fmin=60, fmax=400; const dur = wsDetail.getDuration() || (f0pts.at(-1)?.t || 1);
