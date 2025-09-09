@@ -73,80 +73,100 @@
     wsDetail.on('seek',syncOverview);
     wsOverview.on('seek',rel=> wsDetail.seekTo(rel));
 
-    // ---------- ULTRA-SENSITIVE PULSE ----------
-    const pulseEl=document.getElementById('pulse');
+   <!-- ---------- ULTRA-SENSITIVE PULSE (PC) ---------- -->
+<style>
+  .pulse.flash { outline-color: rgba(106,226,255,1); }
+</style>
+<script>
+  (function(){
+    const pulseEl = document.getElementById('pulse');
 
-    // Envelope params (fixed)
-    const FRAME_MS = 80;  // analysis window
-    const HOP_MS   = 20;  // hop
-    // Sensitivity mapping (normalized RMS -> scale/glow)
-    const THR      = 0.08; // start blooming ~8% of max
-    const CAP      = 0.35; // full bloom ~35% of max
-    const GAMMA    = 0.55; // <1 boosts small values strongly
-    const ATK_MS   = 12;   // quick attack
-    const REL_MS   = 90;   // gentle release
+    // High-resolution analysis (CPU-friendly on desktop)
+    const FRAME_MS = 20;   // analysis window
+    const HOP_MS   = 5;    // hop
+    // Sensitivity (normalized RMS -> response)
+    const THR      = 0.03; // start blooming ~3% of max
+    const CAP      = 0.18; // full bloom ~18% of max
+    const GAMMA    = 0.45; // <1 boosts small values a lot
+    // Visual dynamics
+    const ATK_MS   = 8;    // very quick attack
+    const REL_MS   = 80;   // quick release
     const MIN_S    = 1.00; // min scale
-    const MAX_S    = 4.00; // max scale
+    const MAX_S    = 4.80; // max scale
 
-    let env=null; // [{t, r}] normalized RMS 0..1
-    wsDetail.on('ready', precomputeEnvelope);
+    let env = null; // [{t, r}] normalized RMS 0..1
+
+    // Use WaveSurfer's decoded buffer if available (avoids double decode)
+    const ws = window.wsDetail; // ensure your wsDetail variable is global
+    ws.on('ready', precomputeEnvelope);
 
     async function precomputeEnvelope(){
-      try{
-        const ac=new (window.AudioContext||window.webkitAudioContext)();
-        if(ac.state==='suspended'){ try{ await ac.resume(); }catch{} }
-        const ab=await fetch(src,{cache:'no-store'}).then(r=>r.arrayBuffer());
-        const buf=await ac.decodeAudioData(ab);
-        const sr=buf.sampleRate, ch=buf.getChannelData(0);
-        const frame=Math.max(64, Math.round(FRAME_MS*sr/1000));
-        const hop  =Math.max(16, Math.round(HOP_MS  *sr/1000));
-        const out=[]; let maxR=1e-9;
-        for(let i=0;i+frame<=ch.length;i+=hop){
-          let e=0; for(let j=0;j<frame;j++){ const v=ch[i+j]; e+=v*v; }
-          const r=Math.sqrt(e/frame); if(r>maxR) maxR=r; out.push({t:i/sr, r});
+      try {
+        let buf = ws.getDecodedData && ws.getDecodedData();
+        if (!buf) {
+          const ac = new (window.AudioContext||window.webkitAudioContext)();
+          if (ac.state === 'suspended') { try { await ac.resume(); } catch{} }
+          const ab = await fetch((new URLSearchParams(location.search).get('voice'))||'voice.mp3',{cache:'no-store'}).then(r=>r.arrayBuffer());
+          buf = await ac.decodeAudioData(ab);
+          ac.close();
         }
-        for(const p of out){ p.r/=maxR; } // normalize to 0..1
-        env=out;
+        const sr = buf.sampleRate, ch = buf.getChannelData(0);
+        const frame = Math.max(64, Math.round(FRAME_MS*sr/1000));
+        const hop   = Math.max(16, Math.round(HOP_MS  *sr/1000));
+        const out = []; let maxR = 1e-12;
+        for (let i=0; i+frame<=ch.length; i+=hop){
+          let e=0; for (let j=0;j<frame;j++){ const v=ch[i+j]; e+=v*v; }
+          const r = Math.sqrt(e/frame); if (r>maxR) maxR=r; out.push({t:i/sr, r});
+        }
+        for (const p of out) p.r /= maxR; // normalize 0..1
+        env = out;
         startPulseLoop();
-        ac.close();
-      }catch(e){ console.warn('Envelope failed:', e); }
+      } catch(e){ console.warn('Envelope failed:', e); }
     }
 
     function interpEnv(t){
-      if(!env||!env.length) return 0;
+      if (!env || !env.length) return 0;
+      // binary search for nearest frame
       let lo=0, hi=env.length-1;
-      while(lo<hi){ const mid=(lo+hi)>>1; if(env[mid].t < t) lo=mid+1; else hi=mid; }
+      while (lo<hi){ const mid=(lo+hi)>>1; if (env[mid].t < t) lo=mid+1; else hi=mid; }
       return env[Math.max(0, Math.min(env.length-1, lo))].r;
     }
 
-    let raf=0, smoothed=0, lastT=0;
+    let raf=0, smoothed=0, lastX=0;
     function startPulseLoop(){
       cancelAnimationFrame(raf);
-      const atk = Math.exp(-1 / ((ATK_MS/1000)*60));
-      const rel = Math.exp(-1 / ((REL_MS/1000)*60));
-      const loop=()=>{
-        const t=wsDetail.getCurrentTime()||0;
-        if(t!==lastT){
-          const r = interpEnv(t);                 // 0..1
-          let x = (r - THR) / (CAP - THR);        // threshold → cap
-          x = Math.max(0, Math.min(1, x));
-          x = Math.pow(x, GAMMA);                 // boost small values
-          const coeff = (x>smoothed)? (1- Math.pow(atk,2)) : (1- Math.pow(rel,2));
-          smoothed = smoothed + coeff * (x - smoothed);
+      const fpsCoef = (ms)=> Math.exp(-1 / ((ms/1000)*60));
+      const atk = fpsCoef(ATK_MS), rel = fpsCoef(REL_MS);
 
-          const s = MIN_S + (MAX_S - MIN_S) * smoothed;
-          pulseEl.style.transform = `scale(${s.toFixed(3)})`;
-          pulseEl.classList.toggle('big', x>=0.85);
-          pulseEl.style.boxShadow =
-            `0 0 0 ${Math.round(10+40*smoothed)}px rgba(106,226,255,${0.18+0.32*smoothed}), `+
-            `0 0 ${Math.round(32+48*smoothed)}px rgba(106,226,255,${0.10+0.24*smoothed}) inset`;
-        }
-        lastT=t;
-        raf=requestAnimationFrame(loop);
+      const loop=()=>{
+        const t = ws.getCurrentTime()||0;
+        const r = interpEnv(t);                 // 0..1
+        let x = (r - THR) / (CAP - THR);        // normalize to threshold/cap
+        x = Math.max(0, Math.min(1, x));
+        x = Math.pow(x, GAMMA);                 // boost small values
+
+        const coeff = (x>smoothed)? (1- atk*atk) : (1- rel*rel);
+        smoothed = smoothed + coeff * (x - smoothed);
+
+        const s = MIN_S + (MAX_S - MIN_S) * smoothed;
+        pulseEl.style.transform = `scale(${s.toFixed(3)})`;
+
+        const glow = 0.22 + 0.50*smoothed;
+        pulseEl.style.boxShadow =
+          `0 0 0 ${Math.round(12+50*smoothed)}px rgba(106,226,255,${glow}), `+
+          `0 0 ${Math.round(32+64*smoothed)}px rgba(106,226,255,${0.12+0.28*smoothed}) inset`;
+
+        // quick flash when crossing strong accent
+        const flashing = (x>=0.85 && x>lastX);
+        pulseEl.classList.toggle('flash', flashing);
+        lastX = x;
+
+        raf = requestAnimationFrame(loop);
       };
-      raf=requestAnimationFrame(loop);
+      raf = requestAnimationFrame(loop);
     }
   })();
-  </script>
+</script>
+
 </body>
 </html>
