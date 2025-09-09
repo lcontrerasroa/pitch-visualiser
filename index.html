@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Prosody Player — Waveform + Pulse (separate)</title>
+  <title>Prosody Player — Waveform + Discreet Pulse</title>
   <style>
     :root{--bg:#0b0c0f;--ink:#e7e9ee;--muted:#9aa3b2;--panel:#14161a;--accent:#6ae2ff}
     html,body{height:100%}
@@ -15,18 +15,16 @@
     .pill{margin-left:auto;display:inline-block;padding:2px 8px;border-radius:999px;background:#0f1218;border:1px solid rgba(255,255,255,.12);font-size:12px;color:var(--muted)}
     #overview{height:72px}
     #detail{height:210px;border-top:1px solid rgba(255,255,255,.06)}
-
-    /* Pulse panel (separate strip) */
-    .pulse-panel{height:260px; display:grid; place-items:center}
+    /* Pulse strip (separate) */
+    .pulse-panel{height:220px; display:grid; place-items:center}
     .pulse{
       width:120px;height:120px;border-radius:999px;
-      background:radial-gradient(circle at 50% 45%, rgba(255,255,255,.12), rgba(255,255,255,.02) 60%, rgba(255,255,255,0) 70%);
-      outline:2px solid rgba(106,226,255,.25);
-      box-shadow:0 0 0 0 rgba(106,226,255,.22), 0 0 32px rgba(106,226,255,.10) inset;
+      background:radial-gradient(circle at 50% 45%, rgba(255,255,255,.10), rgba(255,255,255,.02) 60%, rgba(255,255,255,0) 70%);
+      outline:2px solid rgba(106,226,255,.20);
+      box-shadow:0 0 0 0 rgba(106,226,255,.18), 0 0 24px rgba(106,226,255,.08) inset;
       transform:scale(1);
-      transition:transform 60ms linear, box-shadow 60ms linear, outline-color 60ms linear;
+      transition:transform 70ms linear, box-shadow 70ms linear, outline-color 70ms linear;
     }
-    .pulse.flash { outline-color: rgba(106,226,255,1); }
   </style>
 </head>
 <body>
@@ -45,16 +43,17 @@
       <div id="detail"></div>
     </div>
 
-    <!-- Pulse card (separate, no overlay) -->
-    <div class="card pulse-panel" id="pulseCard">
+    <!-- Pulse card (separate) -->
+    <div class="card pulse-panel">
       <div id="pulse" class="pulse"></div>
     </div>
 
   </div>
 
   <script src="./wavesurfer.min.js"></script>
+
+  <!-- Waveform (overview + detail) -->
   <script>
-  // ------------ WaveSurfer: overview + detail ------------
   (function(){
     const qp=(k,d)=>new URLSearchParams(location.search).get(k)||d;
     const src=qp('voice','voice.mp3');
@@ -64,23 +63,21 @@
       cursorColor:'transparent',barWidth:1,barGap:0,normalize:true,interact:true,dragToSeek:true,responsive:true
     });
 
-    let pxPerSec=180;
+    let pxPerSec=200;
     const wsDetail=WaveSurfer.create({
       container:'#detail',height:210,waveColor:'#2b97ad',progressColor:'#6ae2ff',cursorColor:'#6ae2ff',
       barWidth:2,barGap:1,barRadius:1,minPxPerSec:pxPerSec,autoCenter:true,hideScrollbar:false,dragToSeek:true,
       normalize:true,responsive:true
     });
 
-    // expose globally so pulse loop can read current time
-    window.wsDetail = wsDetail;
+    window.wsDetail = wsDetail; // expose for pulse
 
     wsOverview.load(src);
     wsDetail.load(src);
 
-    // Controls
     const timePill=document.getElementById('time');
-    document.getElementById('zoomIn').onclick = ()=>{ pxPerSec=Math.min(1200,pxPerSec*1.25); wsDetail.setOptions({minPxPerSec:pxPerSec}); };
-    document.getElementById('zoomOut').onclick= ()=>{ pxPerSec=Math.max(40,  pxPerSec/1.25); wsDetail.setOptions({minPxPerSec:pxPerSec}); };
+    document.getElementById('zoomIn').onclick = ()=>{ pxPerSec=Math.min(1400,pxPerSec*1.2); wsDetail.setOptions({minPxPerSec:pxPerSec}); };
+    document.getElementById('zoomOut').onclick= ()=>{ pxPerSec=Math.max(40,  pxPerSec/1.2); wsDetail.setOptions({minPxPerSec:pxPerSec}); };
     document.getElementById('play').onclick   = ()=> wsDetail.play();
     document.getElementById('pause').onclick  = ()=> wsDetail.pause();
 
@@ -91,41 +88,38 @@
   })();
   </script>
 
+  <!-- Discreet Pulse (robust, percentile-calibrated) -->
   <script>
-  // --------------- Ultra-sensitive Pulse (separate) ---------------
   (function(){
     const qp=(k,d)=>new URLSearchParams(location.search).get(k)||d;
     const src=qp('voice','voice.mp3');
     const pulseEl = document.getElementById('pulse');
 
-    // High-resolution envelope (desktop-friendly)
-    const FRAME_MS = 20;   // analysis window
-    const HOP_MS   = 5;    // hop
-    // Sensitivity mapping (normalized RMS -> response)
-    const THR      = 0.03; // start bloom ~3% of max
-    const CAP      = 0.18; // full bloom ~18% of max
-    const GAMMA    = 0.45; // <1 boosts small values a lot
-    // Visual dynamics
-    const ATK_MS   = 8;    // quick attack
-    const REL_MS   = 90;   // gentle release
-    const MIN_S    = 1.00; // base scale
-    const MAX_S    = 4.80; // max scale
+    // Envelope analysis (gentle, stable)
+    const FRAME_MS = 40;   // window length
+    const HOP_MS   = 10;   // hop
+    // Visual dynamics (calm)
+    const ATK_MS   = 35;   // attack
+    const REL_MS   = 220;  // release
+    const MIN_S    = 0.98; // base scale
+    const MAX_S    = 2.30; // max scale
+    const GAMMA    = 1.25; // >1: deemphasize small changes
 
-    let env = null; // [{t, r}] normalized RMS 0..1
+    let env=null, thr=0.6, cap=0.9; // will be set via percentiles
 
-    // Build envelope once the audio is ready (or on first play)
     function arm(){
       if (env) return;
-      precomputeEnvelope().then(startPulseLoop).catch(e=>console.warn('Envelope failed:', e));
+      precomputeEnvelope().then(()=>{
+        calibrate();
+        startPulseLoop();
+      }).catch(e=>console.warn('Envelope fail:', e));
     }
 
-    // If WS is already created, listen to ready; also arm on play click
     const ws = window.wsDetail;
     if (ws) ws.on('ready', arm);
     document.getElementById('play').addEventListener('click', arm, {once:true});
 
     async function precomputeEnvelope(){
-      // Prefer using the decoded buffer from WaveSurfer v7+ (if available)
       let buf = (ws && ws.getDecodedData && ws.getDecodedData());
       if (!buf) {
         const ac = new (window.AudioContext||window.webkitAudioContext)();
@@ -142,45 +136,68 @@
         let e=0; for (let j=0;j<frame;j++){ const v=ch[i+j]; e+=v*v; }
         const r = Math.sqrt(e/frame); if (r>maxR) maxR=r; out.push({t:i/sr, r});
       }
-      for (const p of out) p.r /= maxR; // normalize to 0..1
+      for (const p of out) p.r /= maxR; // normalize 0..1
       env = out;
+    }
+
+    function calibrate(){
+      if(!env || !env.length) return;
+      const vals = env.map(p=>p.r).slice().sort((a,b)=>a-b);
+      const q = (pct)=> vals[Math.min(vals.length-1, Math.max(0, Math.round((pct/100)*vals.length)))];
+      const p5  = q(5);
+      const p85 = q(85);
+      const p97 = q(97);
+      // map r∈[p5, p97] → [0,1]
+      thr = (p85 - p5) / Math.max(1e-9, (p97 - p5));
+      cap = 1.0; // by definition after normalization to [p5..p97]
+      // store anchors to use in mapping
+      calibrate._p5 = p5; calibrate._p97 = p97;
     }
 
     function interpEnv(t){
       if (!env || !env.length) return 0;
-      // binary search nearest frame
       let lo=0, hi=env.length-1;
       while (lo<hi){ const mid=(lo+hi)>>1; if (env[mid].t < t) lo=mid+1; else hi=mid; }
       return env[Math.max(0, Math.min(env.length-1, lo))].r;
     }
 
-    let raf=0, smoothed=0, lastX=0;
+    let raf=0, smoothed=0, lastS=1.0;
     function startPulseLoop(){
       cancelAnimationFrame(raf);
       const fpsCoef = (ms)=> Math.exp(-1 / ((ms/1000)*60));
       const atk = fpsCoef(ATK_MS), rel = fpsCoef(REL_MS);
 
+      const smoothstep = (x)=> x<=0?0 : x>=1?1 : (x*x*(3-2*x)); // softer easing
+      const clamp = (v,a,b)=> Math.max(a, Math.min(b, v));
+
       const loop=()=>{
         const t = (window.wsDetail && window.wsDetail.getCurrentTime && window.wsDetail.getCurrentTime()) || 0;
-        const r = interpEnv(t);                 // 0..1
-        let x = (r - THR) / (CAP - THR);        // threshold→cap
-        x = Math.max(0, Math.min(1, x));
-        x = Math.pow(x, GAMMA);                 // boost small values
+        // normalize r using robust anchors
+        const p5 = calibrate._p5 || 0, p97 = calibrate._p97 || 1;
+        let r = interpEnv(t);
+        let rn = clamp((r - p5) / Math.max(1e-9, (p97 - p5)), 0, 1);
 
+        // map to threshold/cap
+        let x = clamp((rn - thr) / Math.max(1e-9, (cap - thr)), 0, 1);
+        x = smoothstep(x);
+        x = Math.pow(x, GAMMA);
+
+        // attack/release smoothing
         const coeff = (x>smoothed)? (1- atk*atk) : (1- rel*rel);
         smoothed = smoothed + coeff * (x - smoothed);
 
-        const s = MIN_S + (MAX_S - MIN_S) * smoothed;
+        // scale with gentle rate limit to avoid “jumping”
+        let s = MIN_S + (MAX_S - MIN_S) * smoothed;
+        const maxStep = 0.12; // max scale delta per frame
+        const delta = clamp(s - lastS, -maxStep, maxStep);
+        s = lastS + delta;
+        lastS = s;
+
         pulseEl.style.transform = `scale(${s.toFixed(3)})`;
-
-        const glow = 0.22 + 0.50*smoothed;
+        const glow = 0.14 + 0.20*smoothed;
         pulseEl.style.boxShadow =
-          `0 0 0 ${Math.round(12+50*smoothed)}px rgba(106,226,255,${glow}), `+
-          `0 0 ${Math.round(32+64*smoothed)}px rgba(106,226,255,${0.12+0.28*smoothed}) inset`;
-
-        const flashing = (x>=0.85 && x>lastX);
-        pulseEl.classList.toggle('flash', flashing);
-        lastX = x;
+          `0 0 0 ${Math.round(10+30*smoothed)}px rgba(106,226,255,${glow}), `+
+          `0 0 ${Math.round(20+40*smoothed)}px rgba(106,226,255,${0.08+0.18*smoothed}) inset`;
 
         raf = requestAnimationFrame(loop);
       };
