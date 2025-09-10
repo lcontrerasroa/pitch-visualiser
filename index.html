@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Prosody Player — Waveform + Balanced Pulse</title>
+  <title>Prosody Player — Waveform + Balanced Pulse (thr74 + bias)</title>
   <style>
     :root{--bg:#0b0c0f;--ink:#e7e9ee;--muted:#9aa3b2;--panel:#14161a;--accent:#6ae2ff}
     html,body{height:100%}
@@ -72,8 +72,16 @@
 
     window.wsDetail = wsDetail; // expose for pulse
 
-    wsDetail.setPlaybackRate(0.8);
-    
+    // Playback rate 0.8x + preserve pitch
+    const rate = +(new URLSearchParams(location.search).get('rate') || 0.8);
+    wsDetail.setPlaybackRate(rate);
+    const media = wsDetail.getMediaElement && wsDetail.getMediaElement();
+    if (media) {
+      media.preservesPitch = true;
+      media.mozPreservesPitch = true;
+      media.webkitPreservesPitch = true;
+    }
+
     wsOverview.load(src);
     wsDetail.load(src);
 
@@ -90,14 +98,14 @@
   })();
   </script>
 
-  <!-- Balanced Pulse (robust, mid-sensitivity) -->
+  <!-- Balanced Pulse (thr lowered to p74 + bias -0.05) -->
   <script>
   (function(){
     const qp=(k,d)=>new URLSearchParams(location.search).get(k)||d;
     const src=qp('voice','voice.mp3');
     const pulseEl = document.getElementById('pulse');
 
-    // Analysis (mid)
+    // Analysis (balanced)
     const FRAME_MS = 30;   // window
     const HOP_MS   = 8;    // hop
     // Dynamics (balanced)
@@ -107,15 +115,12 @@
     const MAX_S    = 3.10; // max scale
     const GAMMA    = 0.9;  // ~linear, slight boost
 
-    // Robust calibration: r in [p10..p96] -> 0..1, start at p80, full at p96
-    let env=null, p10=0, p80=0, p96=1;
+    // Robust calibration: r in [p10..p96] -> 0..1, start at p74 (was p80), full at p96
+    let env=null, p10=0, p74=0, p96=1;
 
     function arm(){
       if (env) return;
-      precomputeEnvelope().then(()=>{
-        calibrate();
-        startPulseLoop();
-      }).catch(e=>console.warn('Envelope fail:', e));
+      precomputeEnvelope().then(()=>{ calibrate(); startPulseLoop(); }).catch(e=>console.warn('Envelope fail:', e));
     }
 
     const ws = window.wsDetail;
@@ -147,7 +152,7 @@
       const vals = env.map(p=>p.r).slice().sort((a,b)=>a-b);
       const q = (pct)=> vals[Math.min(vals.length-1, Math.max(0, Math.round((pct/100)*vals.length)))];
       p10 = q(10);
-      p80 = q(80);
+      p74 = q(74);   // lowered threshold percentile
       p96 = q(96);
     }
 
@@ -172,8 +177,8 @@
         let r = interpEnv(t);
         let rn = clamp((r - p10) / Math.max(1e-9, (p96 - p10)), 0, 1);
 
-        // threshold/cap mapping
-        let thr = clamp((p80 - p10) / Math.max(1e-9, (p96 - p10)), 0, 0.98);
+        // threshold/cap mapping (with bias -0.05 for extra sensitivity)
+        let thr = clamp(((p74 - p10) / Math.max(1e-9, (p96 - p10))) - 0.05, 0, 0.98);
         let x = clamp((rn - thr) / Math.max(1e-9, (1 - thr)), 0, 1);
         x = Math.pow(x, GAMMA);
 
