@@ -3,9 +3,9 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Prosody Player — Waveform + Balanced Pulse (thr74 + bias)</title>
+  <title>Prosody Player — Playlist + Waveform + Pulse</title>
   <style>
-    :root{--bg:#0b0c0f;--ink:#e7e9ee;--muted:#9aa3b2;--panel:#14161a;--accent:#6ae2ff}
+    :root{--bg:#0b0c0f;--ink:#e7e9ee;--muted:#9aa3b2;--panel:#14161a;--accent:#6ae2ff;--accent2:#2b97ad}
     html,body{height:100%}
     body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial}
     .wrap{max-width:1100px;margin:0 auto;padding:24px;display:grid;gap:18px}
@@ -15,6 +15,25 @@
     .pill{margin-left:auto;display:inline-block;padding:2px 8px;border-radius:999px;background:#0f1218;border:1px solid rgba(255,255,255,.12);font-size:12px;color:var(--muted)}
     #overview{height:72px}
     #detail{height:210px;border-top:1px solid rgba(255,255,255,.06)}
+
+    /* Layout: playlist + waveform side-by-side on wide screens */
+    @media (min-width: 980px){
+      .grid-2{display:grid;grid-template-columns: 320px 1fr;gap:18px}
+    }
+
+    /* Playlist styles */
+    .plist{padding:10px}
+    .plist h3{margin:6px 8px 10px;font-size:14px;color:var(--muted);font-weight:600;letter-spacing:.02em}
+    .tracks{display:flex;flex-direction:column;gap:8px;padding:0 8px 12px}
+    .track{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid rgba(255,255,255,.06);border-radius:12px;background:#0f1218;cursor:pointer}
+    .track:hover{border-color:rgba(255,255,255,.14)}
+    .dot{width:8px;height:8px;border-radius:999px;background:#3a4350}
+    .track.active .dot{background:var(--accent)}
+    .tmeta{display:flex;flex-direction:column}
+    .ttitle{font-size:14px}
+    .tsub{font-size:12px;color:var(--muted)}
+    .addhint{margin:6px 8px 12px;font-size:12px;color:var(--muted)}
+
     /* Pulse strip (separate) */
     .pulse-panel{height:230px; display:grid; place-items:center}
     .pulse{
@@ -30,17 +49,26 @@
 <body>
   <div class="wrap">
 
-    <!-- Waveform card -->
-    <div class="card" id="wf">
-      <div class="controls">
-        <button class="btn" id="play">▶️</button>
-        <button class="btn" id="pause">⏸️</button>
-        <button class="btn" id="zoomOut">➖</button>
-        <button class="btn" id="zoomIn">➕</button>
-        <span class="pill" id="time">-- / --</span>
+    <div class="grid-2">
+      <!-- Playlist panel -->
+      <div class="card plist">
+        <h3>Playlist</h3>
+        <div id="tracks" class="tracks"></div>
+        <div class="addhint">Tip: add a <code>tracks.json</code> with your files to populate this list.</div>
       </div>
-      <div id="overview"></div>
-      <div id="detail"></div>
+
+      <!-- Waveform card -->
+      <div class="card" id="wf">
+        <div class="controls">
+          <button class="btn" id="play">▶️</button>
+          <button class="btn" id="pause">⏸️</button>
+          <button class="btn" id="zoomOut">➖</button>
+          <button class="btn" id="zoomIn">➕</button>
+          <span class="pill" id="time">-- / --</span>
+        </div>
+        <div id="overview"></div>
+        <div id="detail"></div>
+      </div>
     </div>
 
     <!-- Pulse card (separate) -->
@@ -52,12 +80,16 @@
 
   <script src="./wavesurfer.min.js"></script>
 
-  <!-- Waveform (overview + detail) -->
+  <!-- Waveform + Playlist -->
   <script>
   (function(){
     const qp=(k,d)=>new URLSearchParams(location.search).get(k)||d;
-    const src=qp('voice','voice.mp3');
+    const defaultSrc = qp('src', qp('voice','voice.mp3')); // support ?src=... or ?voice=...
+    const rate = +(qp('rate', 0.8)); // 0.8× default
 
+    const tracksEl = document.getElementById('tracks');
+
+    // Create WaveSurfer instances
     const wsOverview=WaveSurfer.create({
       container:'#overview',height:72,waveColor:'#24313b',progressColor:'#435564',
       cursorColor:'transparent',barWidth:1,barGap:0,normalize:true,interact:true,dragToSeek:true,responsive:true
@@ -70,10 +102,10 @@
       normalize:true,responsive:true
     });
 
-    window.wsDetail = wsDetail; // expose for pulse
+    // Expose globally for the pulse module
+    window.wsDetail = wsDetail;
 
-    // Playback rate 0.8x + preserve pitch
-    const rate = +(new URLSearchParams(location.search).get('rate') || 0.8);
+    // Playback rate + preserve pitch
     wsDetail.setPlaybackRate(rate);
     const media = wsDetail.getMediaElement && wsDetail.getMediaElement();
     if (media) {
@@ -82,9 +114,7 @@
       media.webkitPreservesPitch = true;
     }
 
-    wsOverview.load(src);
-    wsDetail.load(src);
-
+    // Controls
     const timePill=document.getElementById('time');
     document.getElementById('zoomIn').onclick = ()=>{ pxPerSec=Math.min(1400,pxPerSec*1.18); wsDetail.setOptions({minPxPerSec:pxPerSec}); };
     document.getElementById('zoomOut').onclick= ()=>{ pxPerSec=Math.max(40,  pxPerSec/1.18); wsDetail.setOptions({minPxPerSec:pxPerSec}); };
@@ -95,14 +125,97 @@
     wsDetail.on('timeupdate',()=>{ syncOverview(); const t=wsDetail.getCurrentTime()||0, d=wsDetail.getDuration()||0; timePill.textContent=`${t.toFixed(2)} / ${d.toFixed(2)} s`; });
     wsDetail.on('seek',syncOverview);
     wsOverview.on('seek',rel=> wsDetail.seekTo(rel));
+
+    // ---- Playlist logic ----
+    let playlist = [];
+
+    async function fetchTracksJSON(){
+      try{
+        const r = await fetch('tracks.json', {cache:'no-store'});
+        if(!r.ok) return null;
+        const j = await r.json();
+        // expected shape: { "tracks": [ { "file":"voice.mp3", "title":"The Raven – voice" }, ... ] }
+        if(Array.isArray(j)) return j; // tolerate raw array
+        if(j && Array.isArray(j.tracks)) return j.tracks;
+        return null;
+      }catch{ return null; }
+    }
+
+    function renderPlaylist(list, selectedFile){
+      tracksEl.innerHTML = '';
+      list.forEach((t, idx)=>{
+        const btn = document.createElement('button');
+        btn.className = 'track' + (t.file===selectedFile ? ' active' : '');
+        btn.innerHTML = `
+          <span class="dot"></span>
+          <span class="tmeta">
+            <span class="ttitle">${t.title || t.file}</span>
+            <span class="tsub">${t.file}</span>
+          </span>`;
+        btn.onclick = ()=> loadTrack(t.file, true);
+        tracksEl.appendChild(btn);
+      });
+    }
+
+    function setActive(file){
+      Array.from(tracksEl.children).forEach(el=>{
+        const is = el.querySelector('.tsub')?.textContent.trim()===file;
+        el.classList.toggle('active', !!is);
+      });
+    }
+
+    function loadIntoWavesurfer(file){
+      wsOverview.load(file);
+      wsDetail.load(file);
+      // reset UI
+      timePill.textContent='-- / --';
+    }
+
+    function notifyTrackChange(file){
+      // Let the pulse module know we changed track
+      document.dispatchEvent(new CustomEvent('trackchange', { detail:{ src:file } }));
+      // Keep URL in sync (no reload)
+      const url = new URL(location.href);
+      url.searchParams.set('src', file);
+      history.replaceState(null, '', url.toString());
+    }
+
+    function loadTrack(file, userInitiated=false){
+      wsDetail.pause();
+      loadIntoWavesurfer(file);
+      setActive(file);
+      notifyTrackChange(file);
+      // Respect autoplay policies; only play if initiated by click
+      if(userInitiated){
+        wsDetail.once('ready', ()=> wsDetail.play());
+      }
+    }
+
+    (async ()=>{
+      const fromUrl = defaultSrc;
+      const fromJson = await fetchTracksJSON();
+      if(fromJson && fromJson.length){
+        playlist = fromJson;
+        // If URL src matches one of the tracks, select it; else default to first
+        const chosen = (playlist.find(t=>t.file===fromUrl) || playlist[0]).file;
+        renderPlaylist(playlist, chosen);
+        loadTrack(chosen, false);
+      }else{
+        // Fallback: simple single-item playlist (you can add more once files are in tracks.json)
+        playlist = [
+          { file: fromUrl, title: 'Track' }
+        ];
+        renderPlaylist(playlist, fromUrl);
+        loadTrack(fromUrl, false);
+      }
+    })();
+
   })();
   </script>
 
-  <!-- Balanced Pulse (thr lowered to p74 + bias -0.05) -->
+  <!-- Balanced Pulse (p74 + bias −0.05), re-arms on track change -->
   <script>
   (function(){
-    const qp=(k,d)=>new URLSearchParams(location.search).get(k)||d;
-    const src=qp('voice','voice.mp3');
     const pulseEl = document.getElementById('pulse');
 
     // Analysis (balanced)
@@ -117,19 +230,32 @@
 
     // Robust calibration: r in [p10..p96] -> 0..1, start at p74 (was p80), full at p96
     let env=null, p10=0, p74=0, p96=1;
+    let armed=false;
 
     function arm(){
-      if (env) return;
-      precomputeEnvelope().then(()=>{ calibrate(); startPulseLoop(); }).catch(e=>console.warn('Envelope fail:', e));
+      if (armed) return;
+      armed = true;
+      precomputeEnvelope().then(()=>{ calibrate(); startPulseLoop(); })
+        .catch(e=>{ console.warn('Envelope fail:', e); armed=false; });
     }
 
     const ws = window.wsDetail;
     if (ws) ws.on('ready', arm);
-    document.getElementById('play').addEventListener('click', arm, {once:true});
+
+    // Re-arm when the track changes
+    document.addEventListener('trackchange', ()=>{
+      env=null; p10=0; p74=0; p96=1; armed=false; // reset
+      // wait for wavesurfer to finish decoding the new file
+      if (ws) ws.once('ready', arm);
+    });
 
     async function precomputeEnvelope(){
+      // Prefer decoded buffer from WaveSurfer if available
       let buf = (ws && ws.getDecodedData && ws.getDecodedData());
       if (!buf) {
+        // fallback: decode via AudioContext using current URL param ?src=
+        const url = new URL(location.href);
+        const src = url.searchParams.get('src') || url.searchParams.get('voice') || 'voice.mp3';
         const ac = new (window.AudioContext||window.webkitAudioContext)();
         if (ac.state === 'suspended') { try { await ac.resume(); } catch{} }
         const ab = await fetch(src,{cache:'no-store'}).then(r=>r.arrayBuffer());
