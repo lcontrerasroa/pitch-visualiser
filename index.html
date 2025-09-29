@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Prosody Player — Playlist + Waveform + Pulse</title>
+  <title>Prosody Player — Playlist + Waveform + Adaptive Pulse</title>
   <style>
     :root{--bg:#0b0c0f;--ink:#e7e9ee;--muted:#9aa3b2;--panel:#14161a;--accent:#6ae2ff;--accent2:#2b97ad}
     html,body{height:100%}
@@ -15,15 +15,15 @@
     .pill{margin-left:auto;display:inline-block;padding:2px 8px;border-radius:999px;background:#0f1218;border:1px solid rgba(255,255,255,.12);font-size:12px;color:var(--muted)}
     #overview{height:72px}
     #detail{height:210px;border-top:1px solid rgba(255,255,255,.06)}
+    @media (min-width: 980px){ .grid-2{display:grid;grid-template-columns: 320px 1fr;gap:18px} }
 
-    /* Layout: playlist + waveform side-by-side on wide screens */
-    @media (min-width: 980px){
-      .grid-2{display:grid;grid-template-columns: 320px 1fr;gap:18px}
-    }
-
-    /* Playlist styles */
+    /* Playlist */
     .plist{padding:10px}
-    .plist h3{margin:6px 8px 10px;font-size:14px;color:var(--muted);font-weight:600;letter-spacing:.02em}
+    .plistHead{display:flex;align-items:center;gap:10px;justify-content:space-between;margin:6px 8px 8px}
+    .plist h3{margin:0;font-size:14px;color:var(--muted);font-weight:600;letter-spacing:.02em}
+    .seg{display:inline-flex;background:#0f1218;border:1px solid rgba(255,255,255,.12);border-radius:999px;overflow:hidden}
+    .seg button{border:0;background:transparent;color:var(--muted);padding:6px 10px;font-size:12px;cursor:pointer}
+    .seg button.active{background:rgba(106,226,255,.15);color:var(--ink)}
     .tracks{display:flex;flex-direction:column;gap:8px;padding:0 8px 12px}
     .track{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid rgba(255,255,255,.06);border-radius:12px;background:#0f1218;cursor:pointer}
     .track:hover{border-color:rgba(255,255,255,.14)}
@@ -52,9 +52,16 @@
     <div class="grid-2">
       <!-- Playlist panel -->
       <div class="card plist">
-        <h3>Playlist</h3>
+        <div class="plistHead">
+          <h3>Playlist</h3>
+          <div class="seg" id="sensSeg">
+            <button data-mode="low">Low</button>
+            <button data-mode="med" class="active">Mid</button>
+            <button data-mode="hi">High</button>
+          </div>
+        </div>
         <div id="tracks" class="tracks"></div>
-        
+        <div class="addhint">Add a <code>tracks.json</code> alongside this file to populate the list.</div>
       </div>
 
       <!-- Waveform card -->
@@ -80,12 +87,19 @@
 
   <script src="./wavesurfer.min.js"></script>
 
-  <!-- Waveform + Playlist -->
+  <!-- Waveform + Playlist + Sensitivity UI -->
   <script>
   (function(){
     const qp=(k,d)=>new URLSearchParams(location.search).get(k)||d;
-    const defaultSrc = qp('src', qp('voice','voice.mp3')); // support ?src=... or ?voice=...
-    const rate = +(qp('rate', 0.8)); // 0.8× default
+    const defaultSrc = qp('src', qp('voice','voice.mp3')); // ?src=... or ?voice=...
+    const rate = +(qp('rate', 0.8)); // playback rate
+    const sensQP = (qp('sens','med')||'').toLowerCase();
+
+    // Global settings object for pulse to read
+    window.ProsodySettings = {
+      sensMode: ['low','med','hi'].includes(sensQP) ? sensQP : 'med',
+      sensExtra: (!isNaN(parseFloat(sensQP)) && isFinite(sensQP)) ? parseFloat(sensQP) : 0 // optional numeric tweak
+    };
 
     const tracksEl = document.getElementById('tracks');
 
@@ -134,7 +148,6 @@
         const r = await fetch('tracks.json', {cache:'no-store'});
         if(!r.ok) return null;
         const j = await r.json();
-        // expected shape: { "tracks": [ { "file":"voice.mp3", "title":"The Raven – voice" }, ... ] }
         if(Array.isArray(j)) return j; // tolerate raw array
         if(j && Array.isArray(j.tracks)) return j.tracks;
         return null;
@@ -143,7 +156,7 @@
 
     function renderPlaylist(list, selectedFile){
       tracksEl.innerHTML = '';
-      list.forEach((t, idx)=>{
+      list.forEach((t)=>{
         const btn = document.createElement('button');
         btn.className = 'track' + (t.file===selectedFile ? ' active' : '');
         btn.innerHTML = `
@@ -167,14 +180,11 @@
     function loadIntoWavesurfer(file){
       wsOverview.load(file);
       wsDetail.load(file);
-      // reset UI
       timePill.textContent='-- / --';
     }
 
     function notifyTrackChange(file){
-      // Let the pulse module know we changed track
       document.dispatchEvent(new CustomEvent('trackchange', { detail:{ src:file } }));
-      // Keep URL in sync (no reload)
       const url = new URL(location.href);
       url.searchParams.set('src', file);
       history.replaceState(null, '', url.toString());
@@ -185,7 +195,6 @@
       loadIntoWavesurfer(file);
       setActive(file);
       notifyTrackChange(file);
-      // Respect autoplay policies; only play if initiated by click
       if(userInitiated){
         wsDetail.once('ready', ()=> wsDetail.play());
       }
@@ -196,41 +205,69 @@
       const fromJson = await fetchTracksJSON();
       if(fromJson && fromJson.length){
         playlist = fromJson;
-        // If URL src matches one of the tracks, select it; else default to first
         const chosen = (playlist.find(t=>t.file===fromUrl) || playlist[0]).file;
         renderPlaylist(playlist, chosen);
         loadTrack(chosen, false);
       }else{
-        // Fallback: simple single-item playlist (you can add more once files are in tracks.json)
-        playlist = [
-          { file: fromUrl, title: 'Track' }
-        ];
+        playlist = [{ file: fromUrl, title: 'Track' }];
         renderPlaylist(playlist, fromUrl);
         loadTrack(fromUrl, false);
       }
     })();
 
+    // ---- Sensitivity toggle UI ----
+    const seg = document.getElementById('sensSeg');
+    function setSegActive(mode){
+      Array.from(seg.querySelectorAll('button')).forEach(b=> b.classList.toggle('active', b.dataset.mode===mode));
+    }
+    // init from ProsodySettings
+    setSegActive(window.ProsodySettings.sensMode);
+
+    seg.addEventListener('click', (e)=>{
+      const btn = e.target.closest('button[data-mode]');
+      if(!btn) return;
+      const mode = btn.dataset.mode;
+      window.ProsodySettings.sensMode = mode;
+      // when using the toggle, clear numeric override
+      window.ProsodySettings.sensExtra = 0;
+      setSegActive(mode);
+      document.dispatchEvent(new CustomEvent('sensitivitychange', { detail:{ mode } }));
+    });
   })();
   </script>
 
-  <!-- Balanced Pulse (p74 + bias −0.05), re-arms on track change -->
+  <!-- Adaptive Pulse (per-track normalization + auto threshold + sensitivity toggle) -->
   <script>
   (function(){
     const pulseEl = document.getElementById('pulse');
 
-    // Analysis (balanced)
+    // Analysis / dynamics (balanced defaults)
     const FRAME_MS = 30;   // window
     const HOP_MS   = 8;    // hop
-    // Dynamics (balanced)
     const ATK_MS   = 18;   // attack
     const REL_MS   = 160;  // release
     const MIN_S    = 0.98; // base scale
     const MAX_S    = 3.10; // max scale
-    const GAMMA    = 0.9;  // ~linear, slight boost
+    const GAMMA    = 0.9;  // ~linear
 
-    // Robust calibration: r in [p10..p96] -> 0..1, start at p74 (was p80), full at p96
-    let env=null, p10=0, p74=0, p96=1;
+    let env=null;
+    let calib = { p10:0, p96:1, thrNorm:0.6, baseBias:-0.05 };
     let armed=false;
+
+    // Sensitivity mapping
+    function sensExtraFromMode(){
+      const ps = (window.ProsodySettings||{sensMode:'med', sensExtra:0});
+      // URL numeric override (if any) is added to mode offset
+      const modeOffset = ps.sensMode==='hi' ? -0.03 : (ps.sensMode==='low' ? +0.03 : 0);
+      return modeOffset + (ps.sensExtra||0);
+    }
+
+    const ws = window.wsDetail;
+    if (ws) ws.on('ready', arm);
+    document.addEventListener('trackchange', ()=>{ reset(); if (ws) ws.once('ready', arm); });
+    document.addEventListener('sensitivitychange', ()=>{/* no need to re-arm; loop reads live */});
+
+    function reset(){ env=null; armed=false; calib = { p10:0, p96:1, thrNorm:0.6, baseBias:-0.05 }; }
 
     function arm(){
       if (armed) return;
@@ -239,21 +276,9 @@
         .catch(e=>{ console.warn('Envelope fail:', e); armed=false; });
     }
 
-    const ws = window.wsDetail;
-    if (ws) ws.on('ready', arm);
-
-    // Re-arm when the track changes
-    document.addEventListener('trackchange', ()=>{
-      env=null; p10=0; p74=0; p96=1; armed=false; // reset
-      // wait for wavesurfer to finish decoding the new file
-      if (ws) ws.once('ready', arm);
-    });
-
     async function precomputeEnvelope(){
-      // Prefer decoded buffer from WaveSurfer if available
       let buf = (ws && ws.getDecodedData && ws.getDecodedData());
       if (!buf) {
-        // fallback: decode via AudioContext using current URL param ?src=
         const url = new URL(location.href);
         const src = url.searchParams.get('src') || url.searchParams.get('voice') || 'voice.mp3';
         const ac = new (window.AudioContext||window.webkitAudioContext)();
@@ -270,16 +295,29 @@
         let e=0; for (let j=0;j<frame;j++){ const v=ch[i+j]; e+=v*v; }
         const r = Math.sqrt(e/frame); if (r>maxR) maxR=r; out.push({t:i/sr, r});
       }
-      for (const p of out) p.r /= maxR; // normalize 0..1
+      for (const p of out) p.r /= maxR; // normalize 0..1 within file
       env = out;
     }
 
     function calibrate(){
       const vals = env.map(p=>p.r).slice().sort((a,b)=>a-b);
-      const q = (pct)=> vals[Math.min(vals.length-1, Math.max(0, Math.round((pct/100)*vals.length)))];
-      p10 = q(10);
-      p74 = q(74);   // lowered threshold percentile
-      p96 = q(96);
+      const Q = (pct)=> vals[Math.min(vals.length-1, Math.max(0, Math.round((pct/100)*vals.length)))];
+
+      const p10 = Q(10), p50 = Q(50), p96 = Q(96), p98 = Q(98);
+      const crest = p98 / Math.max(1e-6, p50); // "peaky-ness"
+
+      let thrPct, baseBias;
+      if (crest < 2.0){      thrPct = 68; baseBias = -0.08; }
+      else if (crest < 3.0){ thrPct = 72; baseBias = -0.06; }
+      else {                  thrPct = 74; baseBias = -0.05; }
+
+      const thrVal = Q(thrPct);
+      const range = Math.max(1e-9, (p96 - p10));
+
+      calib.p10 = p10;
+      calib.p96 = p96;
+      calib.thrNorm = Math.max(0, Math.min(0.98, (thrVal - p10)/range));
+      calib.baseBias = baseBias;
     }
 
     function interpEnv(t){
@@ -299,23 +337,19 @@
       const loop=()=>{
         const t = (window.wsDetail && window.wsDetail.getCurrentTime && window.wsDetail.getCurrentTime()) || 0;
 
-        // normalize with robust anchors
-        let r = interpEnv(t);
-        let rn = clamp((r - p10) / Math.max(1e-9, (p96 - p10)), 0, 1);
+        const r  = interpEnv(t);
+        const rn = clamp((r - calib.p10) / Math.max(1e-9, (calib.p96 - calib.p10)), 0, 1);
 
-        // threshold/cap mapping (with bias -0.05 for extra sensitivity)
-        let thr = clamp(((p74 - p10) / Math.max(1e-9, (p96 - p10))) - 0.05, 0, 0.98);
+        // adaptive threshold: normalized + baseBias + sensitivity offset
+        const thr = clamp(calib.thrNorm + calib.baseBias + sensExtraFromMode(), 0, 0.98);
         let x = clamp((rn - thr) / Math.max(1e-9, (1 - thr)), 0, 1);
         x = Math.pow(x, GAMMA);
 
-        // attack/release smoothing
         const coeff = (x>smoothed)? (1- atk*atk) : (1- rel*rel);
         smoothed = smoothed + coeff * (x - smoothed);
 
-        // scale with small rate limit to avoid jumpiness
         let s = MIN_S + (MAX_S - MIN_S) * smoothed;
-        const maxStep = 0.10;
-        s = lastS + clamp(s - lastS, -maxStep, maxStep);
+        s = lastS + clamp(s - lastS, -0.10, 0.10);
         lastS = s;
 
         pulseEl.style.transform = `scale(${s.toFixed(3)})`;
