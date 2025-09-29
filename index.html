@@ -3,9 +3,9 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Prosody Player — Playlist + Waveform + Adaptive Pulse</title>
+  <title>Prosody Player — Playlist + Waveform + Adaptive Pulse + Stress Markers</title>
   <style>
-    :root{--bg:#0b0c0f;--ink:#e7e9ee;--muted:#9aa3b2;--panel:#14161a;--accent:#6ae2ff;--accent2:#2b97ad}
+    :root{--bg:#0b0c0f;--ink:#e7e9ee;--muted:#9aa3b2;--panel:#14161a;--accent:#6ae2ff;--accent2:#2b97ad;--mark:#ffd166}
     html,body{height:100%}
     body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial}
     .wrap{max-width:1100px;margin:0 auto;padding:24px;display:grid;gap:18px}
@@ -14,7 +14,12 @@
     .btn{background:#0f1218;border:1px solid rgba(255,255,255,.12);color:var(--ink);border-radius:999px;padding:8px 14px;cursor:pointer}
     .pill{margin-left:auto;display:inline-block;padding:2px 8px;border-radius:999px;background:#0f1218;border:1px solid rgba(255,255,255,.12);font-size:12px;color:var(--muted)}
     #overview{height:72px}
-    #detail{height:210px;border-top:1px solid rgba(255,255,255,.06)}
+
+    /* Detail wrapper + overlay canvas for markers */
+    .detailWrap{position:relative;height:210px;border-top:1px solid rgba(255,255,255,.06)}
+    #detail{position:absolute;inset:0}
+    #marks{position:absolute;inset:0;pointer-events:none}
+
     @media (min-width: 980px){ .grid-2{display:grid;grid-template-columns: 320px 1fr;gap:18px} }
 
     /* Playlist */
@@ -74,7 +79,10 @@
           <span class="pill" id="time">-- / --</span>
         </div>
         <div id="overview"></div>
-        <div id="detail"></div>
+        <div class="detailWrap">
+          <div id="detail"></div>
+          <canvas id="marks"></canvas>
+        </div>
       </div>
     </div>
 
@@ -95,10 +103,10 @@
     const rate = +(qp('rate', 0.8)); // playback rate
     const sensQP = (qp('sens','med')||'').toLowerCase();
 
-    // Global settings object for pulse to read
+    // Global settings for pulse & markers
     window.ProsodySettings = {
       sensMode: ['low','med','hi'].includes(sensQP) ? sensQP : 'med',
-      sensExtra: (!isNaN(parseFloat(sensQP)) && isFinite(sensQP)) ? parseFloat(sensQP) : 0 // optional numeric tweak
+      sensExtra: (!isNaN(parseFloat(sensQP)) && isFinite(sensQP)) ? parseFloat(sensQP) : 0
     };
 
     const tracksEl = document.getElementById('tracks');
@@ -109,14 +117,14 @@
       cursorColor:'transparent',barWidth:1,barGap:0,normalize:true,interact:true,dragToSeek:true,responsive:true
     });
 
-    let pxPerSec=220;
+    let pxPerSec=220; window.pxPerSec = pxPerSec;
     const wsDetail=WaveSurfer.create({
       container:'#detail',height:210,waveColor:'#2b97ad',progressColor:'#6ae2ff',cursorColor:'#6ae2ff',
       barWidth:2,barGap:1,barRadius:1,minPxPerSec:pxPerSec,autoCenter:true,hideScrollbar:false,dragToSeek:true,
       normalize:true,responsive:true
     });
 
-    // Expose globally for the pulse module
+    // Expose globally
     window.wsDetail = wsDetail;
 
     // Playback rate + preserve pitch
@@ -130,14 +138,15 @@
 
     // Controls
     const timePill=document.getElementById('time');
-    document.getElementById('zoomIn').onclick = ()=>{ pxPerSec=Math.min(1400,pxPerSec*1.18); wsDetail.setOptions({minPxPerSec:pxPerSec}); };
-    document.getElementById('zoomOut').onclick= ()=>{ pxPerSec=Math.max(40,  pxPerSec/1.18); wsDetail.setOptions({minPxPerSec:pxPerSec}); };
+    document.getElementById('zoomIn').onclick = ()=>{ pxPerSec=Math.min(1400,pxPerSec*1.18); window.pxPerSec=pxPerSec; wsDetail.setOptions({minPxPerSec:pxPerSec}); document.dispatchEvent(new Event('zoomchange')); };
+    document.getElementById('zoomOut').onclick= ()=>{ pxPerSec=Math.max(40,  pxPerSec/1.18); window.pxPerSec=pxPerSec; wsDetail.setOptions({minPxPerSec:pxPerSec}); document.dispatchEvent(new Event('zoomchange')); };
     document.getElementById('play').onclick   = ()=> wsDetail.play();
     document.getElementById('pause').onclick  = ()=> wsDetail.pause();
 
     function syncOverview(){ const t=wsDetail.getCurrentTime()||0, d=wsDetail.getDuration()||1; if(wsOverview.setTime) wsOverview.setTime(t); else wsOverview.seekTo(t/d); }
-    wsDetail.on('timeupdate',()=>{ syncOverview(); const t=wsDetail.getCurrentTime()||0, d=wsDetail.getDuration()||0; timePill.textContent=`${t.toFixed(2)} / ${d.toFixed(2)} s`; });
-    wsDetail.on('seek',syncOverview);
+    wsDetail.on('timeupdate',()=>{ syncOverview(); const t=wsDetail.getCurrentTime()||0, d=wsDetail.getDuration()||0; timePill.textContent=`${t.toFixed(2)} / ${d.toFixed(2)} s`; document.dispatchEvent(new Event('frametick')); });
+    wsDetail.on('seek',()=>{ syncOverview(); document.dispatchEvent(new Event('frametick')); });
+    wsDetail.on('redraw',()=> document.dispatchEvent(new Event('frametick')));
     wsOverview.on('seek',rel=> wsDetail.seekTo(rel));
 
     // ---- Playlist logic ----
@@ -148,7 +157,7 @@
         const r = await fetch('tracks.json', {cache:'no-store'});
         if(!r.ok) return null;
         const j = await r.json();
-        if(Array.isArray(j)) return j; // tolerate raw array
+        if(Array.isArray(j)) return j;
         if(j && Array.isArray(j.tracks)) return j.tracks;
         return null;
       }catch{ return null; }
@@ -220,44 +229,35 @@
     function setSegActive(mode){
       Array.from(seg.querySelectorAll('button')).forEach(b=> b.classList.toggle('active', b.dataset.mode===mode));
     }
-    // init from ProsodySettings
     setSegActive(window.ProsodySettings.sensMode);
-
     seg.addEventListener('click', (e)=>{
       const btn = e.target.closest('button[data-mode]');
       if(!btn) return;
       const mode = btn.dataset.mode;
       window.ProsodySettings.sensMode = mode;
-      // when using the toggle, clear numeric override
-      window.ProsodySettings.sensExtra = 0;
+      window.ProsodySettings.sensExtra = 0; // clear numeric override
       setSegActive(mode);
       document.dispatchEvent(new CustomEvent('sensitivitychange', { detail:{ mode } }));
     });
   })();
   </script>
 
-  <!-- Adaptive Pulse (per-track normalization + auto threshold + sensitivity toggle) -->
+  <!-- Adaptive Pulse (per-track normalization + auto threshold + sensitivity toggle) + Stress Index -->
   <script>
   (function(){
     const pulseEl = document.getElementById('pulse');
 
-    // Analysis / dynamics (balanced defaults)
-    const FRAME_MS = 30;   // window
-    const HOP_MS   = 8;    // hop
-    const ATK_MS   = 18;   // attack
-    const REL_MS   = 160;  // release
-    const MIN_S    = 0.98; // base scale
-    const MAX_S    = 3.10; // max scale
-    const GAMMA    = 0.9;  // ~linear
+    // Analysis / dynamics
+    const FRAME_MS = 30, HOP_MS = 8, ATK_MS = 18, REL_MS = 160;
+    const MIN_S = 0.98, MAX_S = 3.10, GAMMA = 0.9;
 
     let env=null;
     let calib = { p10:0, p96:1, thrNorm:0.6, baseBias:-0.05 };
     let armed=false;
+    let syl=null; // syllable detection results
 
-    // Sensitivity mapping
     function sensExtraFromMode(){
       const ps = (window.ProsodySettings||{sensMode:'med', sensExtra:0});
-      // URL numeric override (if any) is added to mode offset
       const modeOffset = ps.sensMode==='hi' ? -0.03 : (ps.sensMode==='low' ? +0.03 : 0);
       return modeOffset + (ps.sensExtra||0);
     }
@@ -265,14 +265,14 @@
     const ws = window.wsDetail;
     if (ws) ws.on('ready', arm);
     document.addEventListener('trackchange', ()=>{ reset(); if (ws) ws.once('ready', arm); });
-    document.addEventListener('sensitivitychange', ()=>{/* no need to re-arm; loop reads live */});
+    document.addEventListener('sensitivitychange', ()=>{/* loop reads live */});
 
-    function reset(){ env=null; armed=false; calib = { p10:0, p96:1, thrNorm:0.6, baseBias:-0.05 }; }
+    function reset(){ env=null; armed=false; calib = { p10:0, p96:1, thrNorm:0.6, baseBias:-0.05 }; syl=null; window.getSyllables = ()=>null; }
 
     function arm(){
       if (armed) return;
       armed = true;
-      precomputeEnvelope().then(()=>{ calibrate(); startPulseLoop(); })
+      precomputeEnvelope().then(()=>{ calibrate(); syl = computeSyllables(env); window.getSyllables=()=>syl; document.dispatchEvent(new Event('syllablesready')); startPulseLoop(); })
         .catch(e=>{ console.warn('Envelope fail:', e); armed=false; });
     }
 
@@ -295,7 +295,7 @@
         let e=0; for (let j=0;j<frame;j++){ const v=ch[i+j]; e+=v*v; }
         const r = Math.sqrt(e/frame); if (r>maxR) maxR=r; out.push({t:i/sr, r});
       }
-      for (const p of out) p.r /= maxR; // normalize 0..1 within file
+      for (const p of out) p.r /= maxR; // normalize 0..1 per file
       env = out;
     }
 
@@ -304,7 +304,7 @@
       const Q = (pct)=> vals[Math.min(vals.length-1, Math.max(0, Math.round((pct/100)*vals.length)))];
 
       const p10 = Q(10), p50 = Q(50), p96 = Q(96), p98 = Q(98);
-      const crest = p98 / Math.max(1e-6, p50); // "peaky-ness"
+      const crest = p98 / Math.max(1e-6, p50);
 
       let thrPct, baseBias;
       if (crest < 2.0){      thrPct = 68; baseBias = -0.08; }
@@ -320,6 +320,71 @@
       calib.baseBias = baseBias;
     }
 
+    // ---------- Stress Index (duration + prominence) ----------
+    function computeSyllables(env){
+      if(!env || env.length < 5) return null;
+      const times = env.map(p=>p.t), vals = env.map(p=>p.r);
+      const hopSec = Math.max( (env[1]?.t || 0) - (env[0]?.t || 0), 0.005 );
+
+      // local median baseline (250 ms)
+      const winSec = 0.25, halfWin = Math.max(1, Math.round(winSec / hopSec / 2));
+      const baseline = [];
+      for (let i=0;i<vals.length;i++){
+        const a = Math.max(0, i - halfWin), b = Math.min(vals.length-1, i + halfWin);
+        const seg = vals.slice(a, b+1).slice().sort((x,y)=>x-y);
+        baseline.push(seg[Math.floor(seg.length/2)] || 1e-6);
+      }
+
+      // peaks with debounce (>=110 ms)
+      const minGap = Math.round(0.11 / hopSec);
+      const peaks = [];
+      for (let i=1;i<vals.length-1;i++){
+        if (vals[i] > vals[i-1] && vals[i] >= vals[i+1]) {
+          const last = peaks.length ? peaks[peaks.length-1].idx : -1;
+          if (last < 0 || (i - last) >= minGap) peaks.push({ idx:i });
+        }
+      }
+
+      const out = [];
+      for (const pk of peaks){
+        const i = pk.idx;
+        const v = Math.max(vals[i], 1e-9), base = Math.max(baseline[i], 1e-9);
+        const promDb = 20 * Math.log10(v / base);
+        const thr = v / Math.SQRT2; // -6 dB
+        let L = i, R = i;
+        while (L > 0 && vals[L] >= thr) L--;
+        while (R < vals.length-1 && vals[R] >= thr) R++;
+        const durMs = (times[R] - times[L]) * 1000;
+        out.push({ t: times[i], promDb, durMs });
+      }
+      if (!out.length) return null;
+
+      // normalize via p10..p90
+      const P = (arr, pct)=>{
+        const s = arr.slice().sort((a,b)=>a-b);
+        const k = Math.min(s.length-1, Math.max(0, Math.round(pct/100 * s.length)));
+        return s[k];
+      };
+      const promArr = out.map(o=>o.promDb), durArr = out.map(o=>o.durMs);
+      const p10P=P(promArr,10), p90P=Math.max(P(promArr,90), p10P+1e-6);
+      const p10D=P(durArr,10),  p90D=Math.max(P(durArr,90),  p10D+1e-6);
+      const norm = (v,a,b)=> Math.max(0, Math.min(1, (v-a)/(b-a)));
+
+      for (const o of out){
+        const nP = norm(o.promDb, p10P, p90P);
+        const nD = norm(o.durMs,  p10D, p90D);
+        o.nProm = nP; o.nDur = nD; o.NSI = 0.6*nD + 0.4*nP;
+      }
+
+      const NSIs = out.map(o=>o.NSI);
+      const mean = NSIs.reduce((a,b)=>a+b,0)/NSIs.length;
+      const sd   = Math.sqrt(NSIs.reduce((a,b)=>a+(b-mean)*(b-mean),0)/NSIs.length) || 1e-6;
+      const thrNSI = Math.min(0.95, Math.max(0.45, mean + 0.3*sd));
+      const stressed = out.filter(o=> o.NSI >= thrNSI);
+
+      return { peaks: out, stressed, thrNSI };
+    }
+
     function interpEnv(t){
       if (!env || !env.length) return 0;
       let lo=0, hi=env.length-1;
@@ -327,20 +392,19 @@
       return env[Math.max(0, Math.min(env.length-1, lo))].r;
     }
 
+    // Pulse loop
     let raf=0, smoothed=0, lastS=1.0;
     function startPulseLoop(){
       cancelAnimationFrame(raf);
       const fpsCoef = (ms)=> Math.exp(-1 / ((ms/1000)*60));
       const atk = fpsCoef(ATK_MS), rel = fpsCoef(REL_MS);
       const clamp = (v,a,b)=> Math.max(a, Math.min(b, v));
-
       const loop=()=>{
         const t = (window.wsDetail && window.wsDetail.getCurrentTime && window.wsDetail.getCurrentTime()) || 0;
 
         const r  = interpEnv(t);
         const rn = clamp((r - calib.p10) / Math.max(1e-9, (calib.p96 - calib.p10)), 0, 1);
 
-        // adaptive threshold: normalized + baseBias + sensitivity offset
         const thr = clamp(calib.thrNorm + calib.baseBias + sensExtraFromMode(), 0, 0.98);
         let x = clamp((rn - thr) / Math.max(1e-9, (1 - thr)), 0, 1);
         x = Math.pow(x, GAMMA);
@@ -362,6 +426,69 @@
       };
       raf = requestAnimationFrame(loop);
     }
+  })();
+  </script>
+
+  <!-- Marker overlay (draw stressed syllables over the detail waveform) -->
+  <script>
+  (function(){
+    const canvas = document.getElementById('marks');
+    const ctx = canvas.getContext('2d');
+
+    function resize(){
+      const dpr = Math.max(1, window.devicePixelRatio||1);
+      const rect = canvas.getBoundingClientRect();
+      canvas.width  = Math.max(1, Math.floor(rect.width  * dpr));
+      canvas.height = Math.max(1, Math.floor(rect.height * dpr));
+      canvas.style.width  = rect.width + 'px';
+      canvas.style.height = rect.height + 'px';
+      ctx.setTransform(dpr,0,0,dpr,0,0);
+    }
+    resize(); window.addEventListener('resize', resize);
+
+    function draw(){
+      const ws = window.wsDetail; if(!ws) return;
+      const syl = (window.getSyllables && window.getSyllables()) || null;
+      const pxPerSec = window.pxPerSec || 220;
+      const W = canvas.clientWidth || canvas.width, H = canvas.clientHeight || canvas.height;
+      ctx.clearRect(0,0,W,H);
+
+      if(!syl || !syl.stressed || !syl.stressed.length) return;
+
+      const cur = ws.getCurrentTime()||0, dur = ws.getDuration()||1;
+      const secondsVisible = (W / pxPerSec);
+      const start = Math.max(0, Math.min(cur - secondsVisible/2, Math.max(0, dur - secondsVisible)));
+      const end = start + secondsVisible;
+
+      // Subtle baseline grid
+      ctx.strokeStyle = 'rgba(255,255,255,.06)';
+      ctx.lineWidth = 1;
+      for(let i=1;i<=3;i++){ const y=(H*i/4)+0.5; ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke(); }
+
+      // Draw stressed markers
+      ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--mark').trim() || '#ffd166';
+      ctx.lineWidth = 2;
+      syl.stressed.forEach(s=>{
+        if(s.t >= start && s.t <= end){
+          const x = Math.round((s.t - start) * pxPerSec) + 0.5;
+          ctx.beginPath();
+          ctx.moveTo(x, 6);
+          ctx.lineTo(x, H-6);
+          ctx.stroke();
+
+          // small cap at top for visibility
+          ctx.beginPath(); ctx.moveTo(x-4,6); ctx.lineTo(x+4,6); ctx.stroke();
+        }
+      });
+    }
+
+    // Redraw on timeline updates / zoom / new syllables
+    document.addEventListener('frametick', draw);
+    document.addEventListener('zoomchange', draw);
+    document.addEventListener('syllablesready', ()=>{ resize(); draw(); });
+
+    // Also on resize and after Wavesurfer redraws (already forwarded as frametick)
+    window.addEventListener('resize', draw);
   })();
   </script>
 </body>
